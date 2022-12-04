@@ -1,6 +1,7 @@
 package it.sssupserver.app.handlers;
 
 import it.sssupserver.app.filemanagers.FileManager;
+import it.sssupserver.app.handlers.httphandler.HttpHandler;
 import it.sssupserver.app.handlers.simplebinaryhandler.*;
 
 /**
@@ -15,6 +16,7 @@ public class RequestHandlerFactory {
     private static class HandlerArgs {
         public int port = 0;
         public String host;
+        public boolean http = false;
     }
 
     public static void Help(String lpadding) {
@@ -24,6 +26,7 @@ public class RequestHandlerFactory {
         System.err.println(lpadding + "Arguments recognised by request handlers:");
         System.err.println(lpadding + "\t" + argsPrefix + "port number: port number on which listen for requests");
         System.err.println(lpadding + "\t" + argsPrefix + "host hostname/ip: hostname or ip on which listen for requests");
+        System.err.println(lpadding + "\t" + argsPrefix + "http: use http request handler");
     }
 
     private static HandlerArgs parseArgs(String[] args) {
@@ -57,6 +60,9 @@ public class RequestHandlerFactory {
                             ans.host = args[++i];
                             host = true;
                             break;
+                        case "http":
+                            ans.http = true;
+                            break;
                         default:
                             throw new Exception("Unrecognised argument '" + a + "'");
                     }
@@ -76,6 +82,8 @@ public class RequestHandlerFactory {
 
     public static RequestHandler getRequestHandler(FileManager executor, String[] args) throws Exception {
         var a = parseArgs(args);
-        return new SimpleBinaryHandler(executor, a.port, a.host);
+        return a.http
+            ? new HttpHandler(executor, a.port, a.host)
+            : new SimpleBinaryHandler(executor, a.port, a.host);
     }
 }
