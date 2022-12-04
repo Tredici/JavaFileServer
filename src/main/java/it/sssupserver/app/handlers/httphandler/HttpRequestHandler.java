@@ -20,18 +20,26 @@ public class HttpRequestHandler implements HttpHandler {
             switch (exchange.getRequestMethod()) {
                 case "GET":
                     {
-                        boolean sizeReq = false;
+                        String req = "";
                         var query = exchange.getRequestURI().getQuery();
-                        if (query != null && query.contains("&")) {
+                        if (query != null) {
                             for (var v : query.split("&")) {
-                                if (v.equals("size") || v.equals("size")) {
-                                    sizeReq = true;
+                                if (v.equals("size") || v.equals("size=")) {
+                                    req = "size"; break;
+                                } else
+                                if (v.equals("list") || v.equals("list=")) {
+                                    req = "list"; break;
                                 }
                             }
                         }
-                        if (sizeReq) {
+                        switch (req) {
+                        case "list":
+                            HttpSchedulableListCommand.handle(this.executor, exchange);
+                            break;
+                        case "size":
                             HttpSchedulableSizeCommand.handle(this.executor, exchange);
-                        } else {
+                            break;
+                        default:
                             HttpSchedulableReadCommand.handle(this.executor, exchange);
                         }
                     }
