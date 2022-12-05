@@ -44,6 +44,9 @@ public class HttpRequestHandler implements HttpHandler {
                         }
                     }
                     break;
+                case "DELETE":
+                    HttpSchedulableDeleteCommand.handle(this.executor, exchange);
+                    break;
                 default:
                     // Not Implemented
                     notImplemented(exchange);
