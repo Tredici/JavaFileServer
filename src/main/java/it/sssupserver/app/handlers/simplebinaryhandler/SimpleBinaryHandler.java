@@ -213,7 +213,7 @@ public class SimpleBinaryHandler implements RequestHandler {
         }
         this.inputServerSocketChannel = ServerSocketChannel.open();
         this.inputServerSocketChannel.bind(this.listening_address);
-        System.out.println("Listener will accept connections on address " + this.listening_address);
+        System.out.println("Listener will accept Simple Binary Protocol connections on address " + this.listening_address);
         var listener = new Listener();
         listener.start();
         this.worker = listener;

@@ -50,7 +50,7 @@ public class HttpHandler implements RequestHandler {
 
     @Override
     public void start() throws Exception {
-        System.out.println("Listener will accept connections on address " + this.listening_address);
+        System.out.println("Listener will accept HTTP connections on address " + this.listening_address);
         httpserver.start();
     }
 
