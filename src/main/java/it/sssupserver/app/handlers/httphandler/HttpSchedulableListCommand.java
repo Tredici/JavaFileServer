@@ -58,6 +58,8 @@ public class HttpSchedulableListCommand extends SchedulableListCommand {
             strbuilder.append("\"");
         }
         var ans = strbuilder.append("]}").toString().getBytes(StandardCharsets.UTF_8);
+        // Il contenuto è json
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
         // https://www.w3.org/Protocols/HTTP/1.0/draft-ietf-http-spec.html#Content-Length
         exchange.sendResponseHeaders(200, ans.length);
         var os = exchange.getResponseBody();
