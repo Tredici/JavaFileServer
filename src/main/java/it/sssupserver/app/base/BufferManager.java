@@ -33,7 +33,7 @@ public class BufferManager {
         if (lpadding == null) {
             lpadding = "";
         }
-        System.err.println(lpadding + "Arguments recognised by request handlers:");
+        System.err.println(lpadding + "Arguments recognised by buffer manager:");
         System.err.println(lpadding + "\t" + argsPrefix + "bufsz size: buffer size in KB");
         System.err.println(lpadding + "\t" + argsPrefix + "limit size: max size in KB for all buffers");
         System.err.println(lpadding + "\t" + argsPrefix + "direct: use direct buffers" + (BufferManager.default_direct ? " (default)" : ""));
