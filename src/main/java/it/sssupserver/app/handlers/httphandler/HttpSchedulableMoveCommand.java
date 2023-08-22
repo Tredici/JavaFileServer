@@ -24,7 +24,7 @@ public class HttpSchedulableMoveCommand extends SchedulableMoveCommand {
     }
 
     private HttpExchange exchange;
-    protected HttpSchedulableModeCommand(MoveCommand cmd, HttpExchange exchange) {
+    protected HttpSchedulableMoveCommand(MoveCommand cmd, HttpExchange exchange) {
         super(cmd);
         this.exchange = exchange;
     }
