@@ -62,7 +62,7 @@ public class HttpHelper {
         if (list.size() != 1) {
             // Bad Request
         }
-        var ContentType = list[0];
+        var ContentType = httpheader.getFirst("Content-Type"); // list[0];
         switch (ContentType) {
             case "application/x-www-form-urlencoded":
                 break;
