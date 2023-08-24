@@ -47,7 +47,7 @@ public class HttpSchedulableMoveCommand extends SchedulableMoveCommand {
         var src = pars.get("src");
         var dst = pars.get("dst");
         var cmd = new MoveCommand(new Path(src), new Path(dst));
-        var schedulable = new HttpSchedulableModeCommand(cmd, exchange);
+        var schedulable = new HttpSchedulableMoveCommand(cmd, exchange);
         executor.scheduleExecution(schedulable);
     }
 }
