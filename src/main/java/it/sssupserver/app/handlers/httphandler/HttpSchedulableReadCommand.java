@@ -127,11 +127,18 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
     }
 
     public static void handle(FileManager executor, HttpExchange exchange) throws Exception {
+        handle(executor, exchange, null);
+    }
+
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
         var uri = exchange.getRequestURI();
         var path = uri.getPath();
         var fixedPath = HttpHelper.normalizePath(path);
         var cmd = new ReadCommand(fixedPath);
         var schedulable = new HttpSchedulableReadCommand(cmd, exchange);
+        if (user != null) {
+            schedulable.setUser(user);
+        }
         executor.scheduleExecution(schedulable.getSizeQuery());
         // block to get file size
         if (schedulable.waitForSizeOrFail()) {
