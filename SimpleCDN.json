@@ -1,0 +1,20 @@
+{
+    "User": "SimpleCDN",
+    "ReplicationFactor": 3,
+    "NodeId": 1,
+    "ClientEndpoints": [
+        {
+            "Url": "http://0.0.0.0:8888"
+        }
+    ],
+    "ManagementEndpoints": [
+        {
+            "Url": "http://0.0.0.0:8080"
+        }
+    ],
+    "CandidatePeers": [
+        {
+            "Url": "http://0.0.0.0:7070"
+        }
+    ]
+}
