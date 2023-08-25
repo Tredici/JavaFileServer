@@ -34,7 +34,7 @@ public class HttpSchedulableDeleteCommand extends SchedulableDeleteCommand  {
         } else {
             exchange.sendResponseHeaders(404, 0);
             exchange.getResponseBody().flush();
-            exchange.close();    
+            exchange.close();
         }
     }
 
