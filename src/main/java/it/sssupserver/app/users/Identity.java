@@ -13,6 +13,11 @@ public class Identity implements Comparable<Identity> {
         this.valid = true;
     }
 
+    public Identity(String username) {
+        // just for simplicity
+        this(username, username.hashCode());
+    }
+
     public boolean isValid() {
         return this.valid;
     }
