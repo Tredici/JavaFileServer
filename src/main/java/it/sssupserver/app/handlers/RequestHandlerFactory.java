@@ -1,8 +1,16 @@
 package it.sssupserver.app.handlers;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.AbstractMap.SimpleImmutableEntry;
+import java.util.stream.Collectors;
+
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.httphandler.HttpHandler;
 import it.sssupserver.app.handlers.simplebinaryhandler.*;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler;
 
 /**
  * This class will be used to supply request
@@ -16,7 +24,8 @@ public class RequestHandlerFactory {
     private static class HandlerArgs {
         public int port = 0;
         public String host;
-        public boolean http = false;
+        public String method = "SBP";
+        public List<Map.Entry<String, String>> extras = new ArrayList<>();
     }
 
     public static void Help(String lpadding) {
@@ -27,6 +36,8 @@ public class RequestHandlerFactory {
         System.err.println(lpadding + "\t" + argsPrefix + "port number: port number on which listen for requests");
         System.err.println(lpadding + "\t" + argsPrefix + "host hostname/ip: hostname or ip on which listen for requests");
         System.err.println(lpadding + "\t" + argsPrefix + "http: use http request handler");
+        System.err.println(lpadding + "\t" + argsPrefix + "cdn: use SimpleCDN request handler");
+        System.err.println(lpadding + "\t" + argsPrefix + "extra: key1=val1[;key2=val2[;key3=val3[...]]] extra handler-specific KV args");
     }
 
     private static HandlerArgs parseArgs(String[] args) {
@@ -61,7 +72,28 @@ public class RequestHandlerFactory {
                             host = true;
                             break;
                         case "http":
-                            ans.http = true;
+                            ans.method = "http";
+                            break;
+                        case "cdn":
+                            ans.method = "cdn";
+                            break;
+                        case "extra":
+                            {
+                                if (i + 1 == args.length) {
+                                    throw new Exception("Missing value for parameter host");
+                                }
+                                var values = args[++i];
+                                var pairs = Arrays.stream(values.split(";"))
+                                    .map(s -> s.split("="));
+                                if (pairs.anyMatch(p -> p.length != 2)) {
+                                    throw new Exception("Bad extra parameter: " + values);
+                                }
+                                ans.extras = pairs.map(p -> new
+                                    SimpleImmutableEntry<String, String>(p[0], p[1]))
+                                    .collect(Collectors.toList())
+                                    //.toArray(SimpleImmutableEntry<String, String>[]::new)
+                                    ;
+                            }
                             break;
                         default:
                             throw new Exception("Unrecognised argument '" + a + "'");
@@ -82,8 +114,17 @@ public class RequestHandlerFactory {
 
     public static RequestHandler getRequestHandler(FileManager executor, String[] args) throws Exception {
         var a = parseArgs(args);
-        return a.http
-            ? new HttpHandler(executor, a.port, a.host)
-            : new SimpleBinaryHandler(executor, a.port, a.host);
+        RequestHandler ans;
+        switch (a.method) {
+            case "http":
+                ans = new HttpHandler(executor, a.port, a.host);
+                break;
+            case "cdn":
+                ans = new SimpleCDNHandler(executor, a.extras);
+            default:
+                ans = new SimpleBinaryHandler(executor, a.port, a.host);
+                break;
+        }
+        return ans;
     }
 }
