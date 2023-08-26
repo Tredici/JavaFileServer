@@ -143,7 +143,7 @@ public class ListTreeCommand extends SchedulableListCommand {
     public void notFound() throws Exception {
         // if tree is null, then file traverse failed
         if (tree == null) {
-            fsSnaphot.completeExceptionally(new Throwable("Not found: " + getPath().toString()));
+            fsSnaphot.completeExceptionally(new RuntimeException("Not found: " + getPath().toString()));
         } else {
             // just decrease counter
             decrementCounter();
