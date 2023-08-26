@@ -19,5 +19,6 @@ public class FileManagerTest {
         var fsTree = f.get();
         executor.stop();
         fsTree.print();
+        System.out.println("As JSON:\n" + fsTree.toJson(true));
     }
 }

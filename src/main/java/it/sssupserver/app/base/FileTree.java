@@ -1,14 +1,23 @@
 package it.sssupserver.app.base;
 
 import java.io.PrintStream;
+import java.lang.reflect.Type;
 import java.util.Arrays;
 import java.util.Collection;
+
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonSerializationContext;
+import com.google.gson.JsonSerializer;
 
 // Data structure used to represent a file system
 // It is used to obtain a snapshot of current state
 // of files and directories mantained by a FileManager
 public class FileTree {
-    
+
     public class Node {
         // path referring to directory
         private Path path;
@@ -80,5 +89,54 @@ public class FileTree {
 
     public void print() {
         print(System.out);
+    }
+
+    static public class FileTreeSerializer implements JsonSerializer<FileTree> {
+        @Override
+        public JsonElement serialize(FileTree src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            if (src.getRoot() != null) {
+                jObj.add("Root", context.serialize(src.getRoot()));
+            }
+            return jObj;
+        }
+    }
+
+    static public class NodeSerializer implements JsonSerializer<Node> {
+        @Override
+        public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.addProperty("Path", src.getPath().toString());
+            jObj.add("IsDirectory", new JsonPrimitive(src.isDirectory()));
+            if (src.isDirectory()) {
+                var jArray = new JsonArray(src.countChildren());
+                if (src.countChildren() > 0) {
+                    var children = src.getChildren();
+                    for (int i=0; i < children.length; ++i) {
+                        jArray.add(context.serialize(children[i]));
+                    }
+                }
+                jObj.add("Children", jArray);
+            }
+            return jObj;
+        }
+    }
+
+    public String toJson(boolean preattyPrint) {
+        // Reference:
+        //  https://github.com/google/gson/blob/main/UserGuide.md
+        var gBuilder = new GsonBuilder()
+                    .registerTypeAdapter(FileTree.class, new FileTreeSerializer())
+                    .registerTypeAdapter(Node.class, new NodeSerializer());
+        if (preattyPrint) {
+            gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+
+        return gson.toJson(this);
+    }
+
+    public String toJson() {
+        return toJson(false);
     }
 }
