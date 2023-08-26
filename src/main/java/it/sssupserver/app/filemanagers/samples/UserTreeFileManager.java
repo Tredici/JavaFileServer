@@ -232,9 +232,9 @@ public class UserTreeFileManager implements FileManager {
                                 buffer.flip();
                                 toRead -= buffer.limit();
                                 if (toRead > 0) {
-                                    try { command.partial(buffer); } catch (Exception ee) { }
+                                    try { command.partial(buffer); } catch (Exception ee) { System.err.println(ee); }
                                 } else {
-                                    try { command.reply(buffer); } catch (Exception ee) { }
+                                    try { command.reply(buffer); } catch (Exception ee) { System.err.println(ee); }
                                 }
                                 buffer.clear();
                             } while (toRead > 0);
@@ -245,7 +245,7 @@ public class UserTreeFileManager implements FileManager {
                     }
                     return fin;
                 }) == null && !flag.found) {
-                    try { command.notFound(); } catch (Exception ee) { }
+                    try { command.notFound(); } catch (Exception ee) { System.err.println(ee); }
                 }
             }
         });
