@@ -12,9 +12,12 @@ public class FileManagerTest {
 
     @Test
     public void testListTreeCommand() throws Exception {
-        var cwd = Paths.get("").resolve("server_dir");
+        var cwd = Paths.get("").toAbsolutePath().resolve("server_dir");
         var executor = new UserTreeFileManager(cwd);
-
-        ListTreeCommand.explore(executor, "", null);
+        executor.start();
+        var f = ListTreeCommand.explore(executor, "", null);
+        var fsTree = f.get();
+        executor.stop();
+        fsTree.print();
     }
 }
