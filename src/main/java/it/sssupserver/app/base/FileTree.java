@@ -1,8 +1,8 @@
 package it.sssupserver.app.base;
 
+import java.io.PrintStream;
+import java.util.Arrays;
 import java.util.Collection;
-
-import java.util.List;
 
 // Data structure used to represent a file system
 // It is used to obtain a snapshot of current state
@@ -41,9 +41,23 @@ public class FileTree {
         // modify the tree by accessing returned objects
         // WARNING: replace previously set tree
         public Node[] setChilderAndReturnSubdirs(Collection<Path> content) {
-            var s = content.stream().map(p -> new Node(p));
-            children = s.toArray(Node[]::new);
-            return s.filter(n -> n.isDirectory()).toArray(Node[]::new);
+            children = content.stream().map(p -> new Node(p)).toArray(Node[]::new);
+            return Arrays.stream(children).filter(n -> n.isDirectory()).toArray(Node[]::new);
+        }
+
+        public void print(PrintStream out, int depth) {
+            for (int i = 0; i<depth; ++i) {
+                out.print("    ");
+            }
+            var path = getPath().getPath();
+            if (depth == 0 && children != null) {
+                out.println("> /");
+            } else {
+                out.println("> " + path[path.length-1] + (isDirectory() ? "/" : ""));
+            }
+            if (children != null) for (Node node : children) {
+                node.print(out, depth+1);
+            }
         }
     }
 
@@ -57,5 +71,14 @@ public class FileTree {
 
     public FileTree(Path path) {
         root = new Node(path);
+    }
+
+    public void print(PrintStream out) {
+        getRoot().print(out, 0);
+        //out.println("> " + getRoot().getPath().toString());
+    }
+
+    public void print() {
+        print(System.out);
     }
 }
