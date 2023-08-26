@@ -2,8 +2,15 @@ package it.sssupserver.app.handlers.simplecdnhandler;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.google.gson.JsonSerializationContext;
+import com.google.gson.JsonSerializer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -18,14 +25,17 @@ import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.URIParameter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 
 public class SimpleCDNHandler implements RequestHandler {
@@ -40,7 +50,7 @@ public class SimpleCDNHandler implements RequestHandler {
     private Identity identity;
 
     // this class
-    private class DataNodeDescriptor {
+    private static class DataNodeDescriptor {
         public long id;
         // list of: http://myendpoint:port
         // used to find http endpoints to download data (as client)
@@ -51,11 +61,27 @@ public class SimpleCDNHandler implements RequestHandler {
         public int replication_factor = 3;
     }
 
+    public static class DataNodeDescriptorGson implements JsonSerializer<DataNodeDescriptor> {
+        @Override
+        public JsonElement serialize(DataNodeDescriptor src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Id", new JsonPrimitive(src.id));
+            jObj.add("ReplicationFactor", new JsonPrimitive(src.replication_factor));
+            jObj.add("DataEndpoints", context.serialize(src.dataendpoints));
+            jObj.add("ManagerEndpoint", context.serialize(src.managerendpoint));
+            return jObj;
+        }
+    }
+
     // hold informations about current instance
     DataNodeDescriptor thisnode;
 
     private URL[] getClientEndpoints() {
         return thisnode.dataendpoints;
+    }
+
+    private URL[] getManagementEndpoints() {
+        return thisnode.managerendpoint;
     }
 
     // this class will hold all the informations about
@@ -175,9 +201,30 @@ public class SimpleCDNHandler implements RequestHandler {
         public boolean isFileOwned(String path) {
             return SimpleCDNHandler.this.thisnode == getFileOwner(path);
         }
+
+        public DataNodeDescriptor[] getSnapshot() {
+            return datanodes.values().toArray(new DataNodeDescriptor[0]);
+        }
+
+        public String asJsonArray(boolean prettyPrinting) {
+            var snapshot = getSnapshot();
+            var gBuilder = new GsonBuilder();
+            if (prettyPrinting) {
+                gBuilder = gBuilder.setPrettyPrinting();
+            }
+            var gson = gBuilder
+                .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
+                .create();
+            var jSnapshot = gson.toJson(snapshot);
+            return jSnapshot;
+        }
+
+        public String asJsonArray() {
+            return asJsonArray(false);
+        }
     }
 
-    // TODO: initialize inside constructor
+    // hold topology seen by this node
     private Topology topology;
 
     // respond with redirect message for supplied file
@@ -280,12 +327,21 @@ public class SimpleCDNHandler implements RequestHandler {
         topology = new Topology();
     }
 
+    // rely on a thread pool in order to .
+    private ExecutorService threadPool;
+
     @Override
     public void start() throws Exception {
+        if (threadPool != null) {
+            throw new RuntimeException("Handler already started");
+        }
+        threadPool = Executors.newCachedThreadPool();
+
 
         // configuration is read inside constructor - so it is handled at startup!
 
         // start manager endpoint
+        startManagementEndpoint();
 
         // start join protocol:
         //  discover topology
@@ -302,33 +358,49 @@ public class SimpleCDNHandler implements RequestHandler {
 
     @Override
     public void stop() throws Exception {
+        if (threadPool == null) {
+            throw new RuntimeException("Handler not started.");
+        }
 
         // start exit protocol
         // shutdown manager endpoint
+        stopManagementEndpoint();
 
         // shutdown client endpoint
         // this is the last stage in order to reduce
         // service disruption to clients
         stopClientEndpoints();
 
+        threadPool.shutdown();
+        threadPool = null;
+
         // TODO Auto-generated method stub
         //throw new UnsupportedOperationException("Unimplemented method 'stop'");
     }
 
+    private void methodNotAllowed(HttpExchange exchange) {
+        try {
+            // 405 Method Not Allowed
+            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405
+            exchange.sendResponseHeaders(405, 0);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); }
+    }
+
+    private void httpNotFound(HttpExchange exchange) {
+        try {
+            exchange.sendResponseHeaders(404, 0);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); }
+
+    }
 
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with client endpoints ++++++++++++++++++++
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class ClientHttpHandler implements HttpHandler {
-        private void methodNotAllowed(HttpExchange exchange) {
-            try {
-                // 405 Method Not Allowed
-                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405
-                exchange.sendResponseHeaders(405, 0);
-                exchange.getResponseBody().flush();
-                exchange.close();
-            } catch (Exception e) { System.err.println(e); }
-        }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
@@ -355,11 +427,11 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     // flag for client request handling
-    boolean clientStarted = false;
+    private boolean clientStarted = false;
     // list of addresses used to receive clients requests
-    List<InetSocketAddress> clientAddresses;
+    private List<InetSocketAddress> clientAddresses;
     // http handlers associated with clients
-    List<HttpServer> clientHttpServers;
+    private List<HttpServer> clientHttpServers;
 
     private void startClientEndpoints() throws IOException {
         if (clientStarted) {
@@ -392,6 +464,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // Add http handler for clients
             hs.createContext("/", new ClientHttpHandler());
             clientHttpServers.add(hs);
+            hs.setExecutor(threadPool);
             hs.start();
         }
 
@@ -416,5 +489,210 @@ public class SimpleCDNHandler implements RequestHandler {
     // ----------------------------------------------------------------
     // Operations associated with client endpoints --------------------
     // ----------------------------------------------------------------
+
+
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Operations associated with management endpoints ++++++++++++++++
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // listen for /api calls
+    private class ApiManagementHttpHandler implements HttpHandler {
+        public static final String PATH = "/api";
+
+        private void sendTopology(HttpExchange exchange) throws IOException {
+            var topo = topology.asJsonArray();
+            var bytes = topo.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            var os = exchange.getResponseBody();
+            os.write(bytes);
+            exchange.close();
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                switch (exchange.getRequestMethod()) {
+                    case "GET":
+                        // retrieve node or topology information
+                        {
+                            var path = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
+                            // TODO - check if it contains path
+                            if (path.equals("topology")) {
+                                // return topology
+                                sendTopology(exchange);
+                            }
+                            else {
+                                httpNotFound(exchange);
+                            }
+                        }
+                        break;
+                    case "POST":
+                        // for join operations and so...
+                        break;
+                    default:
+                        methodNotAllowed(exchange);
+                }
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+        }
+
+    }
+    // listen for PUT and DELETE commands
+    private class FileManagementHttpHandler implements HttpHandler {
+        public static final String PATH = "/file";
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                switch (exchange.getRequestMethod()) {
+                    case "GET":
+                        // download file - same as for users
+                        break;
+                    case "DELETE":
+                        // delete file - handle deletion protocol
+                        break;
+                    case "PUT":
+                        // upload - handle replication protocol
+                        break;
+                    default:
+                        methodNotAllowed(exchange);
+                }
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+        }
+
+    }
+
+    private boolean managementStarted = false;
+    // list of addresses used to receive (other) DataNodes requests
+    private List<InetSocketAddress> managementAddresses;
+    // http handlers associated with other nodes
+    private List<HttpServer> managementHttpServers;
+
+    private void startManagementEndpoint() throws IOException {
+        if (managementStarted) {
+            throw new RuntimeException("Cannot start twice, listener already working");
+        }
+        if (managementAddresses == null) {
+            var mes = getManagementEndpoints();
+            if (mes.length == 0) {
+                throw new RuntimeException("Missing endpoints for DataNodes!");
+            }
+            managementAddresses = new ArrayList<>(mes.length);
+            managementHttpServers = new ArrayList<>(mes.length);
+            for (var me : mes) {
+                var port = me.getPort();
+                var address = me.getHost();
+                // should be http or nothing
+                if (me.getProtocol() != null && !me.getProtocol().equals("http")) {
+                    throw new RuntimeException("Bad url (unsupported protocol): " + me);
+                }
+                managementAddresses.add(new InetSocketAddress(address, port));
+            }
+        }
+        // add all endpoint
+        for (var addr : managementAddresses) {
+            var hs = HttpServer.create(addr, 30);
+            // handle /api calls
+            hs.createContext(ApiManagementHttpHandler.PATH, new ApiManagementHttpHandler());
+            // handle GET, PUT and DELETE for admins only
+            hs.createContext(FileManagementHttpHandler.PATH, new FileManagementHttpHandler());
+            // set thread pool executor for parallelism
+            hs.setExecutor(threadPool);
+            managementHttpServers.add(hs);
+            hs.start();
+        }
+        managementStarted = true;
+    }
+
+    private void stopManagementEndpoint() {
+        if (!managementStarted) {
+            throw new RuntimeException("No listener working");
+        }
+        // disable all management http handlers
+        for (var chs : managementHttpServers) {
+            chs.stop(5);
+        }
+        managementHttpServers.clear();
+        // maintain space for possible new restarts
+        ((ArrayList<HttpServer>)managementHttpServers).ensureCapacity(managementAddresses.size());
+
+        managementStarted = false;
+    }
+
+    // ----------------------------------------------------------------
+    // Operations associated with management endpoints ----------------
+    // ----------------------------------------------------------------
+
+
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Operations associated with control thread ++++++++++++++++++++++
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    // Taking care of a distributed system is a complex task, many
+    // things could fail in many different ways. Fails might also
+    // occur silently without notice during normal interactions among
+    // nodes.
+    // A special thread (pool) will be in charge of trying to detect
+    // failure of other nodes, changes in the topology and replication
+    // of locally owned files.
+
+    private class ControlThread extends Thread {
+
+        // look for candidate DataNode(s) to connect to
+        private void handleJoinProtocol() {
+
+        }
+
+        // start exit protocol to inform other node of intent
+        // to leave the ring
+        private void handleExitProtocol() {
+
+        }
+
+        @Override
+        public void run() {
+            // TODO Auto-generated method stub
+            super.run();
+        }
+
+    }
+    private ControlThread controlThread;
+
+    private void startControlThread() {
+        if (controlThread != null) {
+            throw new RuntimeException("Control thread already started");
+        }
+        // ...
+        controlThread = new ControlThread();
+        controlThread.start();
+    }
+
+    private void stopControlThread() {
+        if (controlThread == null) {
+            throw new RuntimeException("Control thread not started");
+        }
+        // ...
+        controlThread.interrupt();
+        try {
+            controlThread.join();
+        } catch (InterruptedException e) {
+            System.err.println(e);
+            e.printStackTrace();
+        }
+        controlThread = null;
+    }
+
+    // ----------------------------------------------------------------
+    // Operations associated with control thread ----------------------
+    // ----------------------------------------------------------------
+
+    // schedule read command to obtain file content and
+    // send it to remote node
+    private Future sendFileToDataNode(URI remoteDataNode, Path file) {
+
+        return null;
+    }
 
 }
