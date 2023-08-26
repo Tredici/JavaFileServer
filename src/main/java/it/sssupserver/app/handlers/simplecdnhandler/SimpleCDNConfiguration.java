@@ -159,4 +159,18 @@ public class SimpleCDNConfiguration {
 
         return ans;
     }
+
+    public String toJson(boolean prettyPrinting) {
+        var gBuilder = new GsonBuilder();
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+        var jconf = gson.toJson(this);
+        return jconf;
+    }
+
+    public String toJson() {
+        return toJson(false);
+    }
 }
