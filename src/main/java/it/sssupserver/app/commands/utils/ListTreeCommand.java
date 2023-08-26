@@ -85,10 +85,13 @@ public class ListTreeCommand extends SchedulableListCommand {
     }
 
     public static Future<FileTree> explore(FileManager executor, String path, Identity user) throws Exception {
-        return explore(executor, new Path(path), user);
+        return explore(executor, new Path(path, true), user);
     }
 
     public static Future<FileTree> explore(FileManager executor, Path path, Identity user) throws Exception {
+        if (!path.isDir()) {
+            throw new IllegalArgumentException("path must refer to directory");
+        }
         var cmd = new ListTreeCommand(executor, path);
         if (user != null) {
             cmd.setUser(user);
