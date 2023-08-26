@@ -13,14 +13,17 @@ import java.util.Map;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNConfiguration.HttpEndpoint;
 import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.URIParameter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
@@ -41,21 +44,34 @@ public class SimpleCDNHandler implements RequestHandler {
         public long id;
         // list of: http://myendpoint:port
         // used to find http endpoints to download data (as client)
-        public URI[] dataendpoints;
+        public URL[] dataendpoints;
         // used to find http endpoint to operate consistency protocol
-        public URI[] managerendpoint;
+        public URL[] managerendpoint;
         // how many replicas for each file? Default: 3
-        public int replication_strategy = 3;
+        public int replication_factor = 3;
     }
 
     // hold informations about current instance
     DataNodeDescriptor thisnode;
+
+    private URL[] getClientEndpoints() {
+        return thisnode.dataendpoints;
+    }
 
     // this class will hold all the informations about
     // the ring topology
     private class Topology {
         private ConcurrentSkipListMap<Long, DataNodeDescriptor> datanodes = new ConcurrentSkipListMap<>();
 
+        // default topology is only me
+        public Topology() {
+            if (thisnode == null) {
+                throw new RuntimeException("SimpleCDNHandler.this.thisnode must not be null!");
+            }
+            datanodes.put(thisnode.id, thisnode);
+        }
+
+        // null means thisnode
         public DataNodeDescriptor findPrevious(DataNodeDescriptor node) {
             // any previous?
             var prevE = datanodes.floorEntry(node.id-1);
@@ -77,6 +93,7 @@ public class SimpleCDNHandler implements RequestHandler {
             return findPrevious(me);
         }
 
+        // null means thisnode
         public DataNodeDescriptor findSuccessor(DataNodeDescriptor node) {
             // any successor?
             var succE = datanodes.ceilingEntry(node.id+1);
@@ -113,17 +130,16 @@ public class SimpleCDNHandler implements RequestHandler {
             return ownerE.getValue();
         }
 
-
         public List<DataNodeDescriptor> getFileSuppliers(String path) {
             // expected number o
-            var R = SimpleCDNHandler.this.thisnode.replication_strategy;
+            var R = SimpleCDNHandler.this.thisnode.replication_factor;
             List<DataNodeDescriptor> ans = new ArrayList<>(R);
             final var owner = getFileOwner(path);
             ans.add(owner);
             var supplier = owner;
             for (int i=1; i<R; ++i) {
                 supplier = findPrevious(supplier);
-                if (ans.contains(supplier)) {
+                if (supplier == null || ans.contains(supplier)) {
                     // avoid looping - this strategy (i.e. check all instead of checking
                     // if owner refound) is ok also in case of concurrent topology changes
                     break;
@@ -181,7 +197,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.resolve(path).toString());
+                    .add("Location", redirect.toURI().resolve(path).toString());
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -202,7 +218,7 @@ public class SimpleCDNHandler implements RequestHandler {
             try {
                 exchange.sendResponseHeaders(404, 0);
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.resolve(path).toString());
+                    .add("Location", redirect.toURI().resolve(path).toString());
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -244,6 +260,7 @@ public class SimpleCDNHandler implements RequestHandler {
         // load configuration
         try {
             config = SimpleCDNConfiguration.parseJsonCondifuration(config_file.toString());
+            System.out.println(config.toJson(true));
         } catch (FileNotFoundException e) {
             System.err.println("Error while parsing configuration file:");
             System.err.println(e);
@@ -251,6 +268,16 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         // associate identity with current instance
         identity = new Identity(config.getUser());
+        // set thisnode parameters
+        thisnode = new DataNodeDescriptor();
+        thisnode.id = config.getnodeId();
+        thisnode.dataendpoints = Arrays.stream(config.getClientEndpoints())
+            .map(he -> he.getUrl()).toArray(URL[]::new);
+        thisnode.managerendpoint = Arrays.stream(config.getManagementEndpoints())
+            .map(he -> he.getUrl()).toArray(URL[]::new);
+        thisnode.replication_factor = config.getReplicationFactor();
+        // must also initialize topology
+        topology = new Topology();
     }
 
     @Override
@@ -264,26 +291,34 @@ public class SimpleCDNHandler implements RequestHandler {
         //  discover topology
         //  find previous node
         //  start replication strategy
+
         //  start client endpoint
+        startClientEndpoints();
 
         // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'start'");
+        //throw new UnsupportedOperationException("Unimplemented method 'start'");
     }
 
 
     @Override
     public void stop() throws Exception {
 
-        // shutdown client endpoint
         // start exit protocol
         // shutdown manager endpoint
 
+        // shutdown client endpoint
+        // this is the last stage in order to reduce
+        // service disruption to clients
+        stopClientEndpoints();
+
         // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'stop'");
+        //throw new UnsupportedOperationException("Unimplemented method 'stop'");
     }
 
 
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with client endpoints ++++++++++++++++++++
+    // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class ClientHttpHandler implements HttpHandler {
         private void methodNotAllowed(HttpExchange exchange) {
             try {
@@ -292,36 +327,94 @@ public class SimpleCDNHandler implements RequestHandler {
                 exchange.sendResponseHeaders(405, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
-            } catch (Exception e) { }
+            } catch (Exception e) { System.err.println(e); }
         }
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            switch (exchange.getRequestMethod()) {
-                case "GET":
-                    var requestedFile = exchange.getRequestURI().toURL().getPath();
-                    // check if current node is file supplier or redirect
-                    if (SimpleCDNHandler.this.testSupplyabilityOrRedirect(requestedFile, exchange)) {
-                        try {
-                            // recicle old working code
-                            HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity);
-                        } catch (Exception e) { }
-                    }                
-                    break;
-                default:
-                    methodNotAllowed(exchange);
-                    break;
+            try {                
+                switch (exchange.getRequestMethod()) {
+                    case "GET":
+                        var requestedFile = exchange.getRequestURI().getPath();
+                        // check if current node is file supplier or redirect
+                        if (SimpleCDNHandler.this.testSupplyabilityOrRedirect(requestedFile, exchange)) {
+                            try {
+                                // recicle old working code
+                                HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity);
+                            } catch (Exception e) { System.err.println(e); }
+                        }
+                        break;
+                    default:
+                        methodNotAllowed(exchange);
+                        break;
+                }
+            } catch (Exception e) {
+                System.err.println(e);
             }
         }
-
     }
 
-    private void startClientEndpoints() {
+    // flag for client request handling
+    boolean clientStarted = false;
+    // list of addresses used to receive clients requests
+    List<InetSocketAddress> clientAddresses;
+    // http handlers associated with clients
+    List<HttpServer> clientHttpServers;
 
+    private void startClientEndpoints() throws IOException {
+        if (clientStarted) {
+            throw new RuntimeException("Cannot start twice, listener already working");
+        }
+        if (clientAddresses == null) {
+            // endpoints are specified inside configuration,
+            // they do not change after restart
+            var ces = getClientEndpoints();
+            if (ces.length == 0) {
+                throw new RuntimeException("Missing endpoints for client!");
+            }
+            // preallocate lists
+            clientAddresses = new ArrayList<>(ces.length);
+            clientHttpServers = new ArrayList<>(ces.length);
+            // otherwise bind all them
+            for (var ce : ces) {
+                var port = ce.getPort();
+                var address = ce.getHost();
+                // should be http or nothing
+                if (ce.getProtocol() != null && !ce.getProtocol().equals("http")) {
+                    throw new RuntimeException("Bad url (unsupported protocol): " + ce);
+                }
+                clientAddresses.add(new InetSocketAddress(address, port));
+            }
+        }
+        // activate all endpoints
+        for (var addr : clientAddresses) {
+            var hs = HttpServer.create(addr, 30);
+            // Add http handler for clients
+            hs.createContext("/", new ClientHttpHandler());
+            clientHttpServers.add(hs);
+            hs.start();
+        }
+
+        clientStarted = true;
     }
 
     private void stopClientEndpoints() {
+        if (!clientStarted) {
+            throw new RuntimeException("No listener working");
+        }
 
+        // disable all client http servers
+        for (var chs : clientHttpServers) {
+            chs.stop(5);
+        }
+        clientHttpServers.clear();
+        // maintain space for possible new restarts
+        ((ArrayList<HttpServer>)clientHttpServers).ensureCapacity(clientAddresses.size());
+
+        clientStarted = false;
     }
+    // ----------------------------------------------------------------
     // Operations associated with client endpoints --------------------
+    // ----------------------------------------------------------------
+
 }
