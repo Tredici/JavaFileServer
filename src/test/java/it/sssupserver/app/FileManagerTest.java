@@ -20,5 +20,17 @@ public class FileManagerTest {
         executor.stop();
         fsTree.print();
         System.out.println("As JSON:\n" + fsTree.toJson(true));
+        // print dirs
+        var dirs = fsTree.getDirectories();
+        for (var path : dirs) {
+            System.out.println("\t" + path);
+        }
+        // print regural files
+        var regFiles = fsTree.getRegularFiles();
+        System.out.println("Regular files");
+        for (var path : regFiles) {
+            System.out.println("\t" + path);
+        }
     }
+
 }
