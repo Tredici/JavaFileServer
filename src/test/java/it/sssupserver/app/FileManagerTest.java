@@ -49,7 +49,7 @@ public class FileManagerTest {
         // print regural files
         var regFiles = fsTree.getRegularFiles();
         // rely on parallelism
-        var hashes = Arrays.stream(regFiles).map((Function<Path,Future<byte[]>>)p -> {
+        var hashes = Arrays.stream(regFiles).parallel().map((Function<Path,Future<byte[]>>)p -> {
             try {
                 return FileReducerCommand.reduceByHash(executor, p, null, FileReducerCommand.MD5);
             } catch (Exception e) {
