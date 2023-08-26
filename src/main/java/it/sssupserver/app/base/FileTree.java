@@ -40,7 +40,7 @@ public class FileTree {
         // return live objects, i.e. the caller can
         // modify the tree by accessing returned objects
         // WARNING: replace previously set tree
-        public Node[] setChilderAndReturnSubdirs(Collection<Path> content) {
+        public Node[] setChildrenAndReturnSubdirs(Collection<Path> content) {
             children = content.stream().map(p -> new Node(p)).toArray(Node[]::new);
             return Arrays.stream(children).filter(n -> n.isDirectory()).toArray(Node[]::new);
         }

@@ -124,7 +124,7 @@ public class ListTreeCommand extends SchedulableListCommand {
             counter = new AtomicInteger(1);
         }
         // how many subdirs to iterate on?
-        var subdirs = parentNode.setChilderAndReturnSubdirs(content);
+        var subdirs = parentNode.setChildrenAndReturnSubdirs(content);
         // decrement by 1 (this node)
         // schedule more subdirs.lenght inspections
         decrementCounter(1 - subdirs.length); // note - only 1 subdir imply nop
