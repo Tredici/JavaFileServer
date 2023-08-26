@@ -2,8 +2,11 @@ package it.sssupserver.app.base;
 
 import java.io.PrintStream;
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
+import java.util.function.Predicate;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -66,6 +69,19 @@ public class FileTree {
             }
             if (children != null) for (Node node : children) {
                 node.print(out, depth+1);
+            }
+        }
+
+        // perform a dfs to get path to all nodes (files)
+        // respecting given predicate (test == null means take all)
+        private void dfs(List<Path> ans, Predicate<Node> test) {
+            if (test == null || test.test(this)) {
+                ans.add(this.getPath());
+            }
+            if (children != null) {
+                for (var c : children) {
+                    c.dfs(ans, test);
+                }
             }
         }
     }
@@ -138,5 +154,22 @@ public class FileTree {
 
     public String toJson() {
         return toJson(false);
+    }
+
+    // return only paths to regular files (not directory)
+    public Path[] getRegularFiles() {
+        List<Path> ans = new ArrayList<>();
+        if (getRoot() != null) {
+            getRoot().dfs(ans, n -> !n.isDirectory());
+        }
+        return ans.toArray(new Path[0]);
+    }
+
+    public Path[] getDirectories() {
+        List<Path> ans = new ArrayList<>();
+        if (getRoot() != null) {
+            getRoot().dfs(ans, n -> n.isDirectory());
+        }
+        return ans.toArray(new Path[0]);
     }
 }
