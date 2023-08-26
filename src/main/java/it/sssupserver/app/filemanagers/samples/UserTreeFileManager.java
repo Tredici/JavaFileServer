@@ -406,9 +406,9 @@ public class UserTreeFileManager implements FileManager {
                 } catch (Exception e) { }
             }
             if (flag.success) {
-                try { command.reply(items); } catch (Exception ee) { }
+                try { command.reply(items); } catch (Exception ee) { System.err.println(ee); }
             } else {
-                try { command.notFound(); } catch (Exception ee) { }
+                try { command.notFound(); } catch (Exception ee) { System.err.println(ee); }
             }
         });
     }
@@ -434,11 +434,11 @@ public class UserTreeFileManager implements FileManager {
                             fout.force(true);
                         }
                         flag.success = true;
-                    } catch (IOException e) { }
+                    } catch (IOException e) { System.err.println(e); }
                     return fout;
                 });
             }
-            try { command.reply(flag.success); } catch (Exception e) { }
+            try { command.reply(flag.success); } catch (Exception e) { System.err.println(e); }
         });
     }
 
@@ -466,11 +466,11 @@ public class UserTreeFileManager implements FileManager {
                             fout.force(true);
                         }
                         flag.success = true;
-                    } catch (Exception e) { }
+                    } catch (Exception e) { System.err.println(e); }
                     return fout;
                 });
             }
-            try { command.reply(flag.success); } catch (Exception e) { }
+            try { command.reply(flag.success); } catch (Exception e) { System.err.println(e); }
         });
     }
 
@@ -491,13 +491,13 @@ public class UserTreeFileManager implements FileManager {
                         try {
                             Files.copy(srcPath, dsrPath);
                             flag.success = true;
-                        } catch (IOException e) { }
+                        } catch (IOException e) { System.err.println(e); }
                         return null;
                     });
                     return null;
                 });
             }
-            try { command.reply(flag.success); } catch (Exception ee) { }
+            try { command.reply(flag.success); } catch (Exception ee) { System.err.println(e); }
         });
     }
 
@@ -520,9 +520,9 @@ public class UserTreeFileManager implements FileManager {
                                 return fc;
                             }
                         });
-                        try { command.reply(true); } catch (Exception ee) { }
+                        try { command.reply(true); } catch (Exception ee) { System.err.println(e); }
                     } catch (IOException e) {
-                        try { command.reply(false); } catch (Exception ee) { }
+                        try { command.reply(false); } catch (Exception ee) { System.err.println(e); }
                     }
                 } else {
                     var flag = new Object(){
