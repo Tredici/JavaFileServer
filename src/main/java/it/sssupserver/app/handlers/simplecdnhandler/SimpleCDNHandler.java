@@ -76,6 +76,22 @@ public class SimpleCDNHandler implements RequestHandler {
     // hold informations about current instance
     DataNodeDescriptor thisnode;
 
+    private String thisnodeAsJson(boolean prettyPrinting) {
+        var gBuilder = new GsonBuilder();
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
+            .create();
+        var json = gson.toJson(thisnode);
+        return json;
+    }
+
+    private String thisnodeAsJson() {
+        return thisnodeAsJson(true);
+    }
+
     private URL[] getClientEndpoints() {
         return thisnode.dataendpoints;
     }
@@ -490,6 +506,14 @@ public class SimpleCDNHandler implements RequestHandler {
     // Operations associated with client endpoints --------------------
     // ----------------------------------------------------------------
 
+    private static void sendJson(HttpExchange exchange, String json) throws IOException {
+        var bytes = json.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, bytes.length);
+        var os = exchange.getResponseBody();
+        os.write(bytes);
+        exchange.close();
+    }
 
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with management endpoints ++++++++++++++++
@@ -500,12 +524,12 @@ public class SimpleCDNHandler implements RequestHandler {
 
         private void sendTopology(HttpExchange exchange) throws IOException {
             var topo = topology.asJsonArray();
-            var bytes = topo.getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(200, bytes.length);
-            exchange.getResponseHeaders().add("Content-Type", "application/json");
-            var os = exchange.getResponseBody();
-            os.write(bytes);
-            exchange.close();
+            sendJson(exchange, topo);
+        }
+
+        private void sendIdentity(HttpExchange exchange) throws IOException {
+            var me = thisnodeAsJson();
+            sendJson(exchange, me);
         }
 
         @Override
@@ -520,6 +544,10 @@ public class SimpleCDNHandler implements RequestHandler {
                             if (path.equals("topology")) {
                                 // return topology
                                 sendTopology(exchange);
+                            }
+                            else if (path.equals("identity")) {
+                                // return topology
+                                sendIdentity(exchange);
                             }
                             else {
                                 httpNotFound(exchange);
