@@ -1,6 +1,6 @@
 package it.sssupserver.app.base;
 
-public class InvalidPathException extends ExecutionException {
+public class InvalidPathException extends IllegalArgumentException {
     public InvalidPathException() {
         super();
     }
