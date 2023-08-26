@@ -121,6 +121,7 @@ public class RequestHandlerFactory {
                 break;
             case "cdn":
                 ans = new SimpleCDNHandler(executor, a.extras);
+                break;
             default:
                 ans = new SimpleBinaryHandler(executor, a.port, a.host);
                 break;
