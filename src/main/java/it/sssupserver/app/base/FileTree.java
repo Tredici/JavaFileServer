@@ -27,12 +27,19 @@ public class FileTree {
         // array of child nodes, available only for
         // directories
         private Node[] children;
+        // reference to the parent direcory
+        private Node parentNode;
+
+        public Node getParentNode() {
+            return parentNode;
+        }
 
         public Path getPath() {
             return path;
         }
 
-        public Node(Path path) {
+        public Node(Node parentNode, Path path) {
+            this.parentNode = parentNode;
             this.path = path;
         }
 
@@ -53,7 +60,7 @@ public class FileTree {
         // modify the tree by accessing returned objects
         // WARNING: replace previously set tree
         public Node[] setChildrenAndReturnSubdirs(Collection<Path> content) {
-            children = content.stream().map(p -> new Node(p)).toArray(Node[]::new);
+            children = content.stream().map(p -> new Node(this, p)).toArray(Node[]::new);
             return Arrays.stream(children).filter(n -> n.isDirectory()).toArray(Node[]::new);
         }
 
@@ -95,7 +102,7 @@ public class FileTree {
     }
 
     public FileTree(Path path) {
-        root = new Node(path);
+        root = new Node(null, path);
     }
 
     public void print(PrintStream out) {
