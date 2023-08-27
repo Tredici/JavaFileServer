@@ -412,6 +412,14 @@ public class SimpleCDNHandler implements RequestHandler {
         } catch (Exception e) { System.err.println(e); }
     }
 
+    private void httpInternalServerError(HttpExchange exchange) {
+        try {
+            exchange.sendResponseHeaders(500, 0);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); }
+    }
+
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with client endpoints ++++++++++++++++++++
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -436,6 +444,7 @@ public class SimpleCDNHandler implements RequestHandler {
                         break;
                 }
             } catch (Exception e) {
+                httpInternalServerError(exchange);
                 System.err.println(e);
             }
         }
