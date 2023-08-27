@@ -557,7 +557,13 @@ public class UserTreeFileManager implements FileManager {
                 public boolean success = false;
             };
             try (var lock = uFS.readLock()) {
-                Files.createDirectory(path);
+                if (command.isRecursive()) {
+                    // Note: if directory already exists no
+                    // error is thrown
+                    Files.createDirectories(path);
+                } else {
+                    Files.createDirectory(path);
+                }
                 flag.success = true;
             } catch (IOException e) { }
             try { command.reply(flag.success); } catch (Exception ee) { }
