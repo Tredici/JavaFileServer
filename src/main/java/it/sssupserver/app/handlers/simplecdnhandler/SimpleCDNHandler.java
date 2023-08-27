@@ -410,7 +410,6 @@ public class SimpleCDNHandler implements RequestHandler {
             exchange.getResponseBody().flush();
             exchange.close();
         } catch (Exception e) { System.err.println(e); }
-
     }
 
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
