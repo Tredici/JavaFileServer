@@ -17,6 +17,9 @@ import com.sun.net.httpserver.HttpServer;
 import java.util.List;
 import java.util.Map;
 
+import it.sssupserver.app.base.FileTree;
+import it.sssupserver.app.base.FileTree.Node;
+import it.sssupserver.app.commands.utils.ListTreeCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
@@ -36,6 +39,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 
 public class SimpleCDNHandler implements RequestHandler {
@@ -291,6 +296,108 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
+    // initialize parameters used to check validity of file path(s)
+    private static Predicate<String> directoryNameTest;
+    private static Predicate<String> regularFileNameTest;
+    static {
+        directoryNameTest = Pattern.compile(
+            "^(_|-|\\+|\\w)+$",
+            Pattern.CASE_INSENSITIVE
+        ).asMatchPredicate();
+        regularFileNameTest = Pattern.compile(
+            "^(_|-|\\+|\\w)+(\\.(_|-|\\+|\\w)+)+$",
+            Pattern.CASE_INSENSITIVE
+        ).asMatchPredicate();
+    }
+
+    // directories should match "^(_|-|\+|\w)+$"
+    // Easy: they must NOT contains any dot
+    private static boolean isValidDirectoryName(String dirname) {
+        return dirname.length() > 0 && directoryNameTest.test(dirname);
+    }
+
+    // directories should match "^(_|-|\+|\w)+(\.(_|-|\+|\w)+)+$"
+    private static boolean isValidRegularFileName(String filename) {
+        return filename.length() > 0 && regularFileNameTest.test(filename);
+    }
+
+    public static boolean isValidPathName(it.sssupserver.app.base.Path path) {
+        if (path.isEmpty()) {
+            return false;
+        }
+        var isDir = path.isDir();
+        var components = path.getPath();
+        var length = components.length;
+        var lastName = components[length-1];
+        for (int i=0; i<length-1; ++i) {
+            isValidDirectoryName(components[i]);
+        }
+        return isDir ? isValidDirectoryName(lastName)
+            : isValidRegularFileName(lastName);
+    }
+
+    public static boolean isValidPathName(String path) {
+        return isValidPathName(new it.sssupserver.app.base.Path(path));
+    }
+
+    /**
+     * This class maintains a view of the files
+     * managed by this DataNode.
+     * It should be re-initialized every time this
+     * handler is started.
+     */
+    private class ManagedFileSystemStatus {
+
+        FileTree snapshot;
+
+        // return list of empty directories
+        public List<Node> findEmptyDirectories() {
+            return snapshot.filter(n -> n.isDirectory() && n.countChildren() == 0);
+        }
+
+        public Node[] getAllNodes() {
+            return snapshot.getAllNodes();
+        }
+
+        // test
+        private void assertValidNames() {
+            var badFiles = Arrays.stream(snapshot.getAllNodes())
+                .filter(n -> isValidPathName(n.getPath()))
+                .toArray(Node[]::new);
+            if (badFiles.length > 0) {
+                var sb = new StringBuilder("Bad file names:");
+                for (var b : badFiles) {
+                    sb.append(" '").append(b.getPath().toString()).append("'';");
+                }
+                throw new RuntimeException(sb.toString());
+            }
+        }
+
+        // calculate file hashes
+        private void calculateFileHashes() {
+            // TODO : body
+        }
+
+        // check files owned by this datanode
+        // and assert they names are all compliant
+        // whit specified constaints
+        public ManagedFileSystemStatus() throws Exception {
+            // retrieve image of the file system
+            var f = ListTreeCommand.explore(executor, "", identity);
+            snapshot = f.get();
+            // check all names are valid
+            assertValidNames();
+            // calculate file hashes
+
+            // put snapshot inside a mutable structure
+            // in order to facilitate upload/deletion
+            // operations
+
+        }
+    }
+
+    private ManagedFileSystemStatus fsStatus;
+
     // HTTP server used to reply to clients
     private HttpServer clienthttpserver;
     private InetSocketAddress listening_client_address;
@@ -353,8 +460,9 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         threadPool = Executors.newCachedThreadPool();
 
-
         // configuration is read inside constructor - so it is handled at startup!
+        // discover owned files
+        fsStatus = new ManagedFileSystemStatus();
 
         // start manager endpoint
         startManagementEndpoint();
