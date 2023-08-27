@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 
 import com.google.gson.GsonBuilder;
@@ -29,6 +30,25 @@ public class FileTree {
         private Node[] children;
         // reference to the parent direcory
         private Node parentNode;
+
+        // helper properties used to associate file hash
+        // (must be calculated using other tools) to
+        // this node
+        private String hashAlgorithm;
+        private byte[] fileHash;
+
+        public void setFileHash(String algorithm, byte[] fileHash) {
+            this.hashAlgorithm = algorithm;
+            this.fileHash = fileHash;
+        }
+
+        public byte[] getFileHash() {
+            return fileHash;
+        }
+
+        public String getHashAlgorithm() {
+            return hashAlgorithm;
+        }
 
         public Node getParentNode() {
             return parentNode;
@@ -79,6 +99,16 @@ public class FileTree {
             }
         }
 
+        // Recursively call fun on all Node(s) of the tree
+        public void dfs(Consumer<Node> fun) {
+            fun.accept(this);
+            if (children != null) {
+                for (var c : children) {
+                    c.dfs(fun);
+                }
+            }
+        }
+
         // perform a dfs to get path to all nodes (files)
         // respecting given predicate (test == null means take all)
         private void dfs(List<Path> ans, Predicate<Node> test) {
@@ -88,6 +118,18 @@ public class FileTree {
             if (children != null) {
                 for (var c : children) {
                     c.dfs(ans, test);
+                }
+            }
+        }
+
+        // to obtain references to Node(s)
+        private void dfsNodes(List<Node> ans, Predicate<Node> test) {
+            if (test == null || test.test(this)) {
+                ans.add(this);
+            }
+            if (children != null) {
+                for (var c : children) {
+                    c.dfsNodes(ans, test);
                 }
             }
         }
@@ -163,6 +205,14 @@ public class FileTree {
         return toJson(false);
     }
 
+    public Node[] getAllNodes() {
+        List<Node> ans = new ArrayList<>();
+        if (getRoot() != null) {
+            getRoot().dfsNodes(ans, n -> true);
+        }
+        return ans.toArray(new Node[0]);
+    }
+
     // return only paths to regular files (not directory)
     public Path[] getRegularFiles() {
         List<Path> ans = new ArrayList<>();
@@ -172,11 +222,44 @@ public class FileTree {
         return ans.toArray(new Path[0]);
     }
 
+    public Node[] getRegularFileNodes() {
+        List<Node> ans = new ArrayList<>();
+        if (getRoot() != null) {
+            getRoot().dfsNodes(ans, n -> !n.isDirectory());
+        }
+        return ans.toArray(new Node[0]);
+    }
+
     public Path[] getDirectories() {
         List<Path> ans = new ArrayList<>();
         if (getRoot() != null) {
             getRoot().dfs(ans, n -> n.isDirectory());
         }
         return ans.toArray(new Path[0]);
+    }
+
+    public Node[] getDirectorysNodes() {
+        List<Node> ans = new ArrayList<>();
+        if (getRoot() != null) {
+            getRoot().dfsNodes(ans, n -> n.isDirectory());
+        }
+        return ans.toArray(new Node[0]);
+    }
+
+    // perform a dfs on all the nodes inside the tree and
+    // apply fun to all them
+    public void dfs(Consumer<Node> fun) {
+        if (root == null) {
+            return;
+        }
+        fun.accept(root);
+    }
+
+    public List<Node> filter(Predicate<Node> fun) {
+        List<Node> ans = new ArrayList<>();
+        if (root != null) {
+            root.dfsNodes(ans, fun);
+        }
+        return ans;
     }
 }
