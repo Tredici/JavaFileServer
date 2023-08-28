@@ -19,6 +19,7 @@ import java.util.Map;
 
 import it.sssupserver.app.base.FileTree;
 import it.sssupserver.app.base.FileTree.Node;
+import it.sssupserver.app.commands.utils.FileReducerCommand;
 import it.sssupserver.app.commands.utils.ListTreeCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
@@ -34,13 +35,17 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 
 public class SimpleCDNHandler implements RequestHandler {
@@ -330,7 +335,9 @@ public class SimpleCDNHandler implements RequestHandler {
         var length = components.length;
         var lastName = components[length-1];
         for (int i=0; i<length-1; ++i) {
-            isValidDirectoryName(components[i]);
+            if (!isValidDirectoryName(components[i])) {
+                return false;
+            }
         }
         return isDir ? isValidDirectoryName(lastName)
             : isValidRegularFileName(lastName);
@@ -347,7 +354,10 @@ public class SimpleCDNHandler implements RequestHandler {
      * handler is started.
      */
     private class ManagedFileSystemStatus {
+        // hash algorithm chosen to compare files owned by replicas
+        public static final String HASH_ALGORITHM = FileReducerCommand.MD5;
 
+        // Maintain a view of the file tree managed by this replica node
         FileTree snapshot;
 
         // return list of empty directories
@@ -362,20 +372,43 @@ public class SimpleCDNHandler implements RequestHandler {
         // test
         private void assertValidNames() {
             var badFiles = Arrays.stream(snapshot.getAllNodes())
-                .filter(n -> isValidPathName(n.getPath()))
+                .filter(n -> !n.isRoot())
+                .filter(n -> !isValidPathName(n.getPath()))
                 .toArray(Node[]::new);
             if (badFiles.length > 0) {
                 var sb = new StringBuilder("Bad file names:");
                 for (var b : badFiles) {
-                    sb.append(" '").append(b.getPath().toString()).append("'';");
+                    sb.append(" '").append(b.getPath().toString()).append("';");
                 }
                 throw new RuntimeException(sb.toString());
             }
         }
 
         // calculate file hashes
-        private void calculateFileHashes() {
-            // TODO : body
+        private void calculateFileHashes() throws InterruptedException, ExecutionException {
+            // get only regular files
+            var fileNodes = snapshot.getRegularFileNodes();
+            // schedule file hash calculation
+            var fh = Arrays.stream(fileNodes).map((Function<Node,Future<byte[]>>)n -> {
+                var filename = n.getPath();
+                try {
+                    return FileReducerCommand.reduceByHash(executor, filename, identity, HASH_ALGORITHM);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    var ff = new CompletableFuture<byte[]>();
+                    ff.completeExceptionally(e);
+                    return ff;
+                }
+            }).collect(Collectors.toList());
+            // attach hashes to files
+            int index = 0;
+            for (Future<byte[]> future : fh) {
+                var hash = future.get();
+                fileNodes[index].setFileHash(HASH_ALGORITHM, hash);
+                // next
+                ++index;
+            }
+            // TODO: mutable data structure olding file hashes
         }
 
         // check files owned by this datanode
@@ -388,11 +421,44 @@ public class SimpleCDNHandler implements RequestHandler {
             // check all names are valid
             assertValidNames();
             // calculate file hashes
+            calculateFileHashes();
 
             // put snapshot inside a mutable structure
             // in order to facilitate upload/deletion
             // operations
 
+        }
+
+        private class NodeGson implements JsonSerializer<Node> {
+
+            @Override
+            public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
+                var jObj = new JsonObject();
+                jObj.addProperty("Path", src.getPath().toString());
+                jObj.addProperty("HashAlgorithm", src.getHashAlgorithm());
+                jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
+                return jObj;
+            }
+
+        }
+
+        public String regularFilesInfoToJson(boolean prettyPrinting) {
+            var gBuilder = new GsonBuilder()
+                .registerTypeAdapter(Node.class, new NodeGson());
+            if (prettyPrinting) {
+                gBuilder = gBuilder.setPrettyPrinting();
+            }
+            // add reference to serializer
+            var gson = gBuilder.create();
+
+            // reference to regular files only
+            var fileNodes = snapshot.getRegularFileNodes();
+            var json = gson.toJson(fileNodes);
+            return json;
+        }
+
+        public String regularFilesInfoToJson() {
+            return regularFilesInfoToJson(false);
         }
     }
 
@@ -509,7 +575,7 @@ public class SimpleCDNHandler implements RequestHandler {
             exchange.sendResponseHeaders(405, 0);
             exchange.getResponseBody().flush();
             exchange.close();
-        } catch (Exception e) { System.err.println(e); }
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     private void httpNotFound(HttpExchange exchange) {
@@ -517,7 +583,7 @@ public class SimpleCDNHandler implements RequestHandler {
             exchange.sendResponseHeaders(404, 0);
             exchange.getResponseBody().flush();
             exchange.close();
-        } catch (Exception e) { System.err.println(e); }
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     private void httpInternalServerError(HttpExchange exchange) {
@@ -525,7 +591,7 @@ public class SimpleCDNHandler implements RequestHandler {
             exchange.sendResponseHeaders(500, 0);
             exchange.getResponseBody().flush();
             exchange.close();
-        } catch (Exception e) { System.err.println(e); }
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -544,7 +610,7 @@ public class SimpleCDNHandler implements RequestHandler {
                             try {
                                 // recicle old working code
                                 HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity);
-                            } catch (Exception e) { System.err.println(e); }
+                            } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
                         }
                         break;
                     default:
@@ -554,6 +620,7 @@ public class SimpleCDNHandler implements RequestHandler {
             } catch (Exception e) {
                 httpInternalServerError(exchange);
                 System.err.println(e);
+                e.printStackTrace();
             }
         }
     }
@@ -648,6 +715,11 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, me);
         }
 
+        private void sendLocalStorageInfo(HttpExchange exchange) throws IOException {
+            var me = fsStatus.regularFilesInfoToJson();
+            sendJson(exchange, me);
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
@@ -665,6 +737,10 @@ public class SimpleCDNHandler implements RequestHandler {
                                 // return topology
                                 sendIdentity(exchange);
                             }
+                            else if (path.equals("storage")) {
+                                // return topology
+                                sendLocalStorageInfo(exchange);
+                            }
                             else {
                                 httpNotFound(exchange);
                             }
@@ -678,6 +754,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 }
             } catch (Exception e) {
                 System.err.println(e);
+                e.printStackTrace();
             }
         }
 
@@ -839,4 +916,16 @@ public class SimpleCDNHandler implements RequestHandler {
         return null;
     }
 
+    // Code source:
+    //  https://stackoverflow.com/questions/9655181/java-convert-a-byte-array-to-a-hex-string
+    private static final char[] HEX_ARRAY = "0123456789ABCDEF".toLowerCase().toCharArray();
+    public static String bytesToHex(byte[] bytes) {
+        char[] hexChars = new char[bytes.length * 2];
+        for (int j = 0; j < bytes.length; j++) {
+            int v = bytes[j] & 0xFF;
+            hexChars[j * 2] = HEX_ARRAY[v >>> 4];
+            hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+        }
+        return new String(hexChars);
+    }
 }
