@@ -58,6 +58,11 @@ public class FileTree {
             return path;
         }
 
+        // special role assigned to root
+        public boolean isRoot() {
+            return this == FileTree.this.root;
+        }
+
         public Node(Node parentNode, Path path) {
             this.parentNode = parentNode;
             this.path = path;
