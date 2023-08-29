@@ -20,6 +20,7 @@ import java.util.Map;
 import it.sssupserver.app.base.FileTree;
 import it.sssupserver.app.base.FileTree.Node;
 import it.sssupserver.app.commands.utils.FileReducerCommand;
+import it.sssupserver.app.commands.utils.FutureFileSizeCommand;
 import it.sssupserver.app.commands.utils.ListTreeCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
@@ -35,6 +36,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -42,6 +44,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
@@ -61,6 +64,20 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // this class
     private static class DataNodeDescriptor {
+        // a DataNote can traverse all these status
+        public enum Status {
+            // node not working
+            SHUTDOWN,
+            // normal running status, traversed in this order
+            STARTING,
+            SYNCING,
+            RUNNING,
+            STOPPING,
+            // error status
+            MAYBE_FAILED,
+            FAILED
+        }
+        // id identifing the node 
         public long id;
         // list of: http://myendpoint:port
         // used to find http endpoints to download data (as client)
@@ -69,6 +86,8 @@ public class SimpleCDNHandler implements RequestHandler {
         public URL[] managerendpoint;
         // how many replicas for each file? Default: 3
         public int replication_factor = 3;
+        // status of the node
+        public Status status = Status.SHUTDOWN;
     }
 
     public static class DataNodeDescriptorGson implements JsonSerializer<DataNodeDescriptor> {
@@ -400,11 +419,28 @@ public class SimpleCDNHandler implements RequestHandler {
                     return ff;
                 }
             }).collect(Collectors.toList());
+            // schedule file size calculation
+            var fs = Arrays.stream(fileNodes).map((Function<Node,Future<Long>>)n -> {
+                var filename = n.getPath();
+                try {
+                    return FutureFileSizeCommand.querySize(executor, filename, identity);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    var ff = new CompletableFuture<Long>();
+                    ff.completeExceptionally(e);
+                    return ff;
+                }
+            }).collect(Collectors.toList());
             // attach hashes to files
             int index = 0;
+            var fsIter = fs.iterator();
             for (Future<byte[]> future : fh) {
+                // get hash
                 var hash = future.get();
                 fileNodes[index].setFileHash(HASH_ALGORITHM, hash);
+                // get sizes
+                var size = fsIter.next().get();
+                fileNodes[index].setSize(size);
                 // next
                 ++index;
             }
@@ -435,6 +471,7 @@ public class SimpleCDNHandler implements RequestHandler {
             public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
                 var jObj = new JsonObject();
                 jObj.addProperty("Path", src.getPath().toString());
+                jObj.addProperty("Size", src.getSize());
                 jObj.addProperty("HashAlgorithm", src.getHashAlgorithm());
                 jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
                 return jObj;
@@ -566,6 +603,111 @@ public class SimpleCDNHandler implements RequestHandler {
 
         // TODO Auto-generated method stub
         //throw new UnsupportedOperationException("Unimplemented method 'stop'");
+    }
+
+    /**
+     * This class will be charged of collecting and supplying
+     * all all statistics regarding client operations affecting
+     * this node 
+     */
+    private class StatsCollector {
+
+        // per file stats
+        public class FileStats {
+            private String path;
+            // how many redirect performed
+            private AtomicLong redirects = new AtomicLong();
+            // supplied how many times
+            private AtomicLong supplied = new AtomicLong();
+            // errors, include not found
+            private AtomicLong errors = new AtomicLong();
+
+            public FileStats(String path) {
+                this.path = path;
+            }
+
+            public String getPath() {
+                return path;
+            }
+
+            public long incRedirects() {
+                return redirects.incrementAndGet();
+            }
+
+            public long getRedirects() {
+                return redirects.get();
+            }
+
+            public long incSupplied() {
+                return supplied.incrementAndGet();
+            }
+
+            public long getSupplied() {
+                return supplied.get();
+            }
+
+            public long incErrors() {
+                return errors.incrementAndGet();
+            }
+
+            public long getErrors() {
+                return errors.get();
+            }
+        }
+
+        private ConcurrentSkipListMap<String, FileStats> fileStats = new ConcurrentSkipListMap<>();
+
+        public StatsCollector() {
+        }
+
+        public FileStats getFileStats(String path) {
+            // take (or create) and return
+            return fileStats.computeIfAbsent(path, p -> new FileStats(p));
+        }
+
+        public FileStats[] getFileStats() {
+            return fileStats.values().toArray(FileStats[]::new);
+        }
+
+        public String asJson(boolean prettyPrinting) {
+            var gBuilder = new GsonBuilder();
+            if (prettyPrinting) {
+                gBuilder = gBuilder.setPrettyPrinting();
+            }
+            var gson = gBuilder
+                .registerTypeAdapter(FileStats.class, new FileStatsGson())
+                .registerTypeAdapter(StatsCollector.class, new StatsCollectorGson())
+                .create();
+            var json = gson.toJson(getFileStats());
+            return json;
+        }
+
+        public String asJson() {
+            return asJson(false);
+        }
+    }
+
+    // this object is mantained alive for all the Handler lifespan
+    private StatsCollector clientStatsCollector = new StatsCollector();
+
+    public static class FileStatsGson implements JsonSerializer<StatsCollector.FileStats> {
+        @Override
+        public JsonElement serialize(StatsCollector.FileStats src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.addProperty("Path", src.getPath());
+            jObj.addProperty("Supplied", src.getSupplied());
+            jObj.addProperty("Redirects", src.getRedirects());
+            jObj.addProperty("Errors", src.getErrors());
+            return jObj;
+        }
+    }
+
+    public static class StatsCollectorGson implements JsonSerializer<StatsCollector> {
+        @Override
+        public JsonElement serialize(StatsCollector src, Type typeOfSrc, JsonSerializationContext context) {
+            var stats = src.getFileStats();
+            return context.serialize(stats);
+        }
     }
 
     private void methodNotAllowed(HttpExchange exchange) {
@@ -720,6 +862,11 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, me);
         }
 
+        private void sendFileStatistics(HttpExchange exchange) throws IOException {
+            var me = clientStatsCollector.asJson();
+            sendJson(exchange, me);
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
@@ -740,6 +887,10 @@ public class SimpleCDNHandler implements RequestHandler {
                             else if (path.equals("storage")) {
                                 // return topology
                                 sendLocalStorageInfo(exchange);
+                            }
+                            else if (path.equals("stats")) {
+                                // return file statistics
+                                sendFileStatistics(exchange);
                             }
                             else {
                                 httpNotFound(exchange);
