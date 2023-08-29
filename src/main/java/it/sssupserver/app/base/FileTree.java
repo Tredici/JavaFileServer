@@ -37,6 +37,17 @@ public class FileTree {
         private String hashAlgorithm;
         private byte[] fileHash;
 
+        // -1 means unknown size
+        private long size = -1;
+
+        public long getSize() {
+            return size;
+        }
+
+        public void setSize(long size) {
+            this.size = size;
+        }
+
         public void setFileHash(String algorithm, byte[] fileHash) {
             this.hashAlgorithm = algorithm;
             this.fileHash = fileHash;
