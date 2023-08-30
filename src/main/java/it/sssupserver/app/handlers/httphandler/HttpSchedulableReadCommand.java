@@ -1,5 +1,6 @@
 package it.sssupserver.app.handlers.httphandler;
 
+import it.sssupserver.app.base.Path;
 import it.sssupserver.app.commands.*;
 import it.sssupserver.app.commands.schedulables.*;
 import it.sssupserver.app.filemanagers.FileManager;
@@ -130,11 +131,8 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
         handle(executor, exchange, null);
     }
 
-    public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
-        var uri = exchange.getRequestURI();
-        var path = uri.getPath();
-        var fixedPath = HttpHelper.normalizePath(path);
-        var cmd = new ReadCommand(fixedPath);
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user, Path path) throws Exception {
+        var cmd = new ReadCommand(path);
         var schedulable = new HttpSchedulableReadCommand(cmd, exchange);
         if (user != null) {
             schedulable.setUser(user);
@@ -148,5 +146,12 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
             // send 404
             schedulable.notFound();
         }
+    }
+
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
+        var uri = exchange.getRequestURI();
+        var path = uri.getPath();
+        var fixedPath = HttpHelper.normalizePath(path);
+        handle(executor, exchange, user, fixedPath);
     }
 }
