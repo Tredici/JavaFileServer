@@ -11,7 +11,7 @@ import java.util.regex.*;
 public class Path {
     private static Predicate<String> test;
     static {
-        var re = "[/\\w\\.\\s-]+";
+        var re = "[/\\w\\.\\s-@]+";
         var pattern = Pattern.compile(re, Pattern.CASE_INSENSITIVE);
         test = pattern.asMatchPredicate();
     }
