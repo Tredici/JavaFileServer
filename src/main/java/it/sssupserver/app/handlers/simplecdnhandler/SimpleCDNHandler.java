@@ -85,7 +85,7 @@ public class SimpleCDNHandler implements RequestHandler {
             MAYBE_FAILED,
             FAILED
         }
-        // id identifing the node 
+        // id identifing the node
         public long id;
         // list of: http://myendpoint:port
         // used to find http endpoints to download data (as client)
@@ -106,6 +106,7 @@ public class SimpleCDNHandler implements RequestHandler {
             jObj.add("ReplicationFactor", new JsonPrimitive(src.replication_factor));
             jObj.add("DataEndpoints", context.serialize(src.dataendpoints));
             jObj.add("ManagerEndpoint", context.serialize(src.managerendpoint));
+            jObj.addProperty("Status", src.status.toString());
             return jObj;
         }
     }
@@ -126,7 +127,7 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     private String thisnodeAsJson() {
-        return thisnodeAsJson(true);
+        return thisnodeAsJson(false);
     }
 
     private URL[] getClientEndpoints() {
@@ -156,10 +157,10 @@ public class SimpleCDNHandler implements RequestHandler {
             var prevE = datanodes.floorEntry(node.id-1);
             if (prevE == null) {
                 // search for last
-                prevE = datanodes.lastEntry();   
+                prevE = datanodes.lastEntry();
             }
             // return other or me
-            return prevE.getValue() == node ? null : prevE.getValue(); 
+            return prevE.getValue() == node ? null : prevE.getValue();
         }
 
         // find previous of the current node,
@@ -380,6 +381,19 @@ public class SimpleCDNHandler implements RequestHandler {
         return isValidPathName(new it.sssupserver.app.base.Path(path));
     }
 
+
+    private class NodeGson implements JsonSerializer<Node> {
+        @Override
+        public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.addProperty("Path", src.getPath().toString());
+            jObj.addProperty("Size", src.getSize());
+            jObj.addProperty("HashAlgorithm", src.getHashAlgorithm());
+            jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
+            return jObj;
+        }
+    }
+
     /**
      * This class maintains a view of the files
      * managed by this DataNode.
@@ -461,7 +475,7 @@ public class SimpleCDNHandler implements RequestHandler {
                     return corrupted;
                 }
 
-                // not completed file, to be 
+                // not completed file, to be
                 public boolean isTmp() {
                     return tmp;
                 }
@@ -516,7 +530,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 return ans;
             }
         }
-        
+
         // Concurrent map of local available files
         private ConcurrentSkipListMap<String, LocalFileInfo> localFiles = new ConcurrentSkipListMap<>();
 
@@ -537,7 +551,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         // Helper class used to parse true path names in order to
-        // extract 
+        // extract
         private class FilenameMetadata {
             // Filename structure:
             //  "{regular file name character}
@@ -616,9 +630,9 @@ public class SimpleCDNHandler implements RequestHandler {
                 if (isCorrupted()) {
                     sb.append("@corrupted");
                 }
-                return sb.toString(); 
+                return sb.toString();
             }
-        } 
+        }
 
         /**
          * Take a reference to a node and add the file to
@@ -725,6 +739,10 @@ public class SimpleCDNHandler implements RequestHandler {
             return snapshot.getAllNodes();
         }
 
+        public Node[] getAllRegularFileNodes() {
+            return snapshot.getRegularFileNodes();
+        }
+
         // test
         private void assertValidDirectoryNames() {
             var badFiles = Arrays.stream(snapshot.getDirectorysNodes())
@@ -804,18 +822,6 @@ public class SimpleCDNHandler implements RequestHandler {
 
         }
 
-        private class NodeGson implements JsonSerializer<Node> {
-            @Override
-            public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
-                var jObj = new JsonObject();
-                jObj.addProperty("Path", src.getPath().toString());
-                jObj.addProperty("Size", src.getSize());
-                jObj.addProperty("HashAlgorithm", src.getHashAlgorithm());
-                jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
-                return jObj;
-            }
-        }
-
         public String regularFilesInfoToJson(boolean prettyPrinting) {
             var gBuilder = new GsonBuilder()
                 .registerTypeAdapter(Node.class, new NodeGson());
@@ -892,7 +898,7 @@ public class SimpleCDNHandler implements RequestHandler {
     // executor that will handle all locally-saved files!
     private FileManager executor;
 
-    // handling CDN is complex, so it use 
+    // handling CDN is complex, so it use
     public SimpleCDNHandler(FileManager executor, List<Map.Entry<String, String>> args) {
         // keep reference to file manager
         this.executor = executor;
@@ -993,7 +999,7 @@ public class SimpleCDNHandler implements RequestHandler {
     /**
      * This class will be charged of collecting and supplying
      * all all statistics regarding client operations affecting
-     * this node 
+     * this node
      */
     private class StatsCollector {
 
@@ -1095,6 +1101,135 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
+    public class FileInfoWithIdentityGson implements JsonSerializer<FileInfoWithIdentityGson> {
+        private DataNodeDescriptor identity;
+        private FileTree.Node[] nodes;
+
+        public FileInfoWithIdentityGson(DataNodeDescriptor identity, FileTree.Node[] nodes) {
+            this.identity = identity;
+            this.nodes = nodes;
+        }
+
+        @Override
+        public JsonElement serialize(FileInfoWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Identity", context.serialize(identity));
+            jObj.add("LocalFiles", context.serialize(nodes));
+            return jObj;
+        }
+    }
+
+    private String regularFilesInfoWithMeToJson(boolean prettyPrinting) {
+        var obj = new FileInfoWithIdentityGson(thisnode, fsStatus.getAllRegularFileNodes());
+        var gBuilder = new GsonBuilder()
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
+            .registerTypeAdapter(Node.class, new NodeGson())
+            .registerTypeAdapter(FileInfoWithIdentityGson.class, obj);
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+        var json = gson.toJson(obj);
+        return json;
+    }
+
+    public class TopologyWithIdentityGson implements JsonSerializer<TopologyWithIdentityGson> {
+        private DataNodeDescriptor identity;
+        private DataNodeDescriptor[] snapshot;
+
+        public TopologyWithIdentityGson(DataNodeDescriptor identity, DataNodeDescriptor[] snapshot) {
+            this.identity = identity;
+            this.snapshot = snapshot;
+        }
+
+        @Override
+        public JsonElement serialize(TopologyWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Identity", context.serialize(identity));
+            jObj.add("Topology", context.serialize(snapshot));
+            return jObj;
+        }
+    }
+
+    private String topologyWithMeToJson(boolean prettyPrinting) {
+        var obj = new TopologyWithIdentityGson(thisnode, topology.getSnapshot());
+        var gBuilder = new GsonBuilder()
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
+            .registerTypeAdapter(TopologyWithIdentityGson.class, obj);
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+        var json = gson.toJson(obj);
+        return json;
+    }
+
+    public class SuppliableFilesWithIdentityGson implements JsonSerializer<SuppliableFilesWithIdentityGson> {
+        private DataNodeDescriptor identity;
+        private ManagedFileSystemStatus.LocalFileInfo[] localFileInfos;
+
+        public SuppliableFilesWithIdentityGson(DataNodeDescriptor identity, ManagedFileSystemStatus.LocalFileInfo[] localFileInfos) {
+            this.identity = identity;
+            this.localFileInfos = localFileInfos;
+        }
+
+        @Override
+        public JsonElement serialize(SuppliableFilesWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Identity", context.serialize(identity));
+            jObj.add("SuppliableFiles", context.serialize(localFileInfos));
+            return jObj;
+        }
+    }
+
+    private String suppliableFilesWithIdentity(boolean prettyPrinting, boolean detailed) {
+        var obj = new SuppliableFilesWithIdentityGson(thisnode, fsStatus.getSuppliableFiles());
+        var gBuilder = new GsonBuilder()
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
+            .registerTypeAdapter(ManagedFileSystemStatus.LocalFileInfo.class, new LocalFileVersionGson(detailed))
+            .registerTypeAdapter(SuppliableFilesWithIdentityGson.class, obj);
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+        var json = gson.toJson(obj);
+        return json;
+
+    }
+
+    public class StatisticsWithIdentityGson implements JsonSerializer<StatisticsWithIdentityGson> {
+        private DataNodeDescriptor identity;
+        private StatsCollector.FileStats[] statistics;
+
+        public StatisticsWithIdentityGson(DataNodeDescriptor identity, StatsCollector.FileStats[] statistics) {
+            this.identity = identity;
+            this.statistics = statistics;
+        }
+
+        @Override
+        public JsonElement serialize(StatisticsWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Identity", context.serialize(identity));
+            jObj.add("Statistics", context.serialize(statistics));
+            return jObj;
+        }
+    }
+
+    public String statisticsWithIdentity(boolean prettyPrinting) {
+        var obj = new StatisticsWithIdentityGson(thisnode, clientStatsCollector.getFileStats());
+        var gBuilder = new GsonBuilder()
+            .registerTypeAdapter(DataNodeDescriptorGson.class, new DataNodeDescriptorGson())
+            .registerTypeAdapter(StatsCollector.FileStats.class, new FileStatsGson())
+            .registerTypeAdapter(StatsCollector.class, new StatsCollectorGson())
+            .registerTypeAdapter(StatisticsWithIdentityGson.class, obj);
+        if (prettyPrinting) {
+            gBuilder = gBuilder.setPrettyPrinting();
+        }
+        var gson = gBuilder.create();
+        var json = gson.toJson(obj);
+        return json;
+    }
+
     private void methodNotAllowed(HttpExchange exchange) {
         try {
             // 405 Method Not Allowed
@@ -1128,7 +1263,7 @@ public class SimpleCDNHandler implements RequestHandler {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            try {                
+            try {
                 switch (exchange.getRequestMethod()) {
                     case "GET":
                         var requestedFile = exchange.getRequestURI().getPath().substring(1);
@@ -1244,6 +1379,11 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, topo);
         }
 
+        private void sendTopologyWithIdentity(HttpExchange exchange) throws IOException {
+            var topo = topologyWithMeToJson(false);
+            sendJson(exchange, topo);
+        }
+
         private void sendIdentity(HttpExchange exchange) throws IOException {
             var me = thisnodeAsJson();
             sendJson(exchange, me);
@@ -1254,8 +1394,18 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, me);
         }
 
+        private void sendLocalStorageInfoWithIdentity(HttpExchange exchange) throws IOException {
+            var info = regularFilesInfoWithMeToJson(false);
+            sendJson(exchange, info);
+        }
+
         private void sendSuppliableFileInfo(HttpExchange exchange) throws IOException {
             var info = fsStatus.suppliableFilesAsJson();
+            sendJson(exchange, info);
+        }
+
+        private void sendSuppliableFileInfoWithIdentity(HttpExchange exchange) throws IOException {
+            var info = suppliableFilesWithIdentity(false, false);
             sendJson(exchange, info);
         }
 
@@ -1264,9 +1414,19 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, info);
         }
 
+        private void sendSuppliableFileInfoDetailedWithIdentity(HttpExchange exchange) throws IOException {
+            var info = suppliableFilesWithIdentity(false, false);
+            sendJson(exchange, info);
+        }
+
         private void sendFileStatistics(HttpExchange exchange) throws IOException {
             var me = clientStatsCollector.asJson();
             sendJson(exchange, me);
+        }
+
+        private void sendFileStatisticsWithIdentity(HttpExchange exchange) throws IOException {
+            var stats = statisticsWithIdentity(false);
+            sendJson(exchange, stats);
         }
 
         @Override
@@ -1280,7 +1440,7 @@ public class SimpleCDNHandler implements RequestHandler {
                             // TODO - check if it contains path
                             if (path.equals("topology")) {
                                 // return topology
-                                sendTopology(exchange);
+                                sendTopologyWithIdentity(exchange);
                             }
                             else if (path.equals("identity")) {
                                 // return topology
@@ -1288,19 +1448,19 @@ public class SimpleCDNHandler implements RequestHandler {
                             }
                             else if (path.equals("storage")) {
                                 // return topology
-                                sendLocalStorageInfo(exchange);
+                                sendLocalStorageInfoWithIdentity(exchange);
                             }
                             else if (path.equals("suppliables")) {
                                 // return topology
-                                sendSuppliableFileInfo(exchange);
+                                sendSuppliableFileInfoWithIdentity(exchange);
                             }
                             else if (path.equals("detailedSuppliables")) {
                                 // return topology
-                                sendSuppliableFileInfoDetailed(exchange);
+                                sendSuppliableFileInfoDetailedWithIdentity(exchange);
                             }
                             else if (path.equals("stats")) {
                                 // return file statistics
-                                sendFileStatistics(exchange);
+                                sendFileStatisticsWithIdentity(exchange);
                             }
                             else {
                                 httpNotFound(exchange);
