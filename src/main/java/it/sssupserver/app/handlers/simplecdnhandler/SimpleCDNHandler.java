@@ -6,6 +6,7 @@ import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -21,6 +22,7 @@ import it.sssupserver.app.base.FileTree;
 import it.sssupserver.app.base.FileTree.Node;
 import it.sssupserver.app.commands.utils.FileReducerCommand;
 import it.sssupserver.app.commands.utils.FutureFileSizeCommand;
+import it.sssupserver.app.commands.utils.FutureMoveCommand;
 import it.sssupserver.app.commands.utils.ListTreeCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
@@ -34,12 +36,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -61,6 +66,9 @@ public class SimpleCDNHandler implements RequestHandler {
     private SimpleCDNConfiguration config;
     // identity associated with current replica
     private Identity identity;
+
+    // when was this node started
+    private Instant startInstant;
 
     // this class
     private static class DataNodeDescriptor {
@@ -334,6 +342,12 @@ public class SimpleCDNHandler implements RequestHandler {
         ).asMatchPredicate();
     }
 
+    // pattern used to insert metadata informations inside file names
+    private static Pattern fileMetadataPattern;
+    static {
+        fileMetadataPattern = Pattern.compile("^(?<simpleName>[^@]*)(@(?<timestamp>\\d+))?(?<temporary>@tmp)?(?<corrupted>@corrupted)?$");
+    }
+
     // directories should match "^(_|-|\+|\w)+$"
     // Easy: they must NOT contains any dot
     private static boolean isValidDirectoryName(String dirname) {
@@ -379,6 +393,329 @@ public class SimpleCDNHandler implements RequestHandler {
         // Maintain a view of the file tree managed by this replica node
         FileTree snapshot;
 
+        // putting restrictions on directory and file names
+        // allow us to
+
+        /**
+         * Used to caracterize a locally holded file.
+         *
+         * Maintains a description for register of locally owned nodes
+         * This is used to handle multiple file versions
+         */
+        public class LocalFileInfo {
+            // a file is identified by its path as String
+            // HTTP requests hold this identifier
+            private String searchPath;
+
+            public LocalFileInfo(String searchPath) {
+                this.searchPath = searchPath;
+            }
+
+            public String getSearchPath() {
+                return searchPath;
+            }
+
+            public class Version {
+                // time associated with
+                private boolean corrupted = false;
+                private boolean tmp = false;
+                // associate file with Node olding its properties
+                private FileTree.Node node;
+
+                public Version(FileTree.Node node, boolean isCorrupted, boolean isTemporary) {
+                    this.node = node;
+                    this.corrupted = isCorrupted;
+                    this.tmp = isTemporary;
+
+                    // add to list of versions
+                    LocalFileInfo.this.versions.add(this);
+                }
+
+                // identifier of the container object
+                public String getSearchPath() {
+                    return searchPath;
+                }
+
+                public long getSize() {
+                    return node.getSize();
+                }
+
+                public Instant getLastUpdateTimestamp() {
+                    return node.getLastModified();
+                }
+
+                public String getHashAlgotrithm() {
+                    return node.getHashAlgorithm();
+                }
+
+                public byte[] getFileHash() {
+                    return node.getFileHash();
+                }
+
+                public  it.sssupserver.app.base.Path getPath() {
+                    return node.getPath();
+                }
+
+                // corrupted files should not be returned
+                public boolean isCorrupted() {
+                    return corrupted;
+                }
+
+                // not completed file, to be 
+                public boolean isTmp() {
+                    return tmp;
+                }
+
+                /**
+                 * A file can be supplied to clients if:
+                 *  it is not temporary
+                 *  it is not corrupted
+                 */
+                public boolean isSuppliable() {
+                    return !isCorrupted() && !isTmp();
+                }
+            }
+
+            public Version addVersion(FileTree.Node node, FilenameMetadata metadata) {
+                var ans = new Version(node, metadata.isCorrupted(), metadata.isTemporary());
+                return ans;
+            }
+
+            public Version[] getAllVersions() {
+                return versions.stream().toArray(Version[]::new);
+            }
+
+            private ConcurrentLinkedQueue<Version> versions = new ConcurrentLinkedQueue<>();
+
+            /**
+             * At least one suppliable version?
+             */
+            public boolean hasSuppliableVersion() {
+                for (var v : versions) {
+                    if (v.isSuppliable()) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            // return the last Version of the file available
+            // to be returned to clients
+            public Version getLastSuppliableVersion() {
+                Version ans = null;
+                for (var candidate : versions) {
+                    // is version suppliable?
+                    if (candidate.isSuppliable()) {
+                        if (ans == null ||
+                            ans.getLastUpdateTimestamp()
+                                .compareTo(candidate.getLastUpdateTimestamp()) < 0) {
+                            ans = candidate;
+                        }
+                    }
+                }
+                return ans;
+            }
+        }
+        
+        // Concurrent map of local available files
+        private ConcurrentSkipListMap<String, LocalFileInfo> localFiles = new ConcurrentSkipListMap<>();
+
+        /**
+         * Map searchPath for a file (the one receiven in
+         * HTTP requests) and map it into the local file version
+         */
+        public it.sssupserver.app.base.Path findTruePath(String path) {
+            var lfi = localFiles.get(path);
+            if (lfi == null) {
+                return null;
+            }
+            var v = lfi.getLastSuppliableVersion();
+            if (v == null) {
+                return null;
+            }
+            return v.getPath();
+        }
+
+        // Helper class used to parse true path names in order to
+        // extract 
+        private class FilenameMetadata {
+            // Filename structure:
+            //  "{regular file name character}
+            //   (@\d: timestamp)?
+            //   (@corrupted)?
+            //   (@tmp)?"
+
+            private String simpleName;
+            private Instant timestamp;
+            private boolean corrupted;
+            private boolean temporary;
+
+            public FilenameMetadata(String filename) {
+                // regex and parse
+                var m = fileMetadataPattern.matcher(filename);
+                if (!m.find()) {
+                    throw new RuntimeException("No pattern (" + fileMetadataPattern.pattern()
+                        + ") recognised in filename: " + filename);
+                }
+                simpleName = m.group("simpleName");
+                var time = m.group("timestamp");
+                var corr = m.group("corrupted");
+                var tmp = m.group("temporary");
+                if (time != null) {
+                    this.timestamp = Instant.ofEpochMilli(Long.parseLong(time));
+                }
+                if (corr != null) {
+                    this.corrupted = true;
+                }
+                if (tmp != null) {
+                    this.temporary = true;
+                }
+            }
+
+            /**
+             * Return string before first '@'
+             * @return
+             */
+            public String getSimpleName() {
+                return simpleName;
+            }
+
+            public void setTimestamp(Instant timestamp) {
+                this.timestamp = timestamp;
+            }
+
+            public Instant getTimestamp() {
+                return timestamp;
+            }
+
+            public void setCorrupted(boolean corrupted) {
+                this.corrupted = corrupted;
+            }
+
+            public boolean isCorrupted() {
+                return corrupted;
+            }
+
+            public void setTemporary(boolean temporary) {
+                this.temporary = temporary;
+            }
+
+            public boolean isTemporary() {
+                return temporary;
+            }
+
+            public String toString() {
+                var sb = new StringBuffer();
+                sb.append(simpleName);
+                if (timestamp != null) {
+                    sb.append('@').append(timestamp.toEpochMilli());
+                }
+                if (isTemporary()) {
+                    sb.append("@tmp");
+                }
+                if (isCorrupted()) {
+                    sb.append("@corrupted");
+                }
+                return sb.toString(); 
+            }
+        } 
+
+        /**
+         * Take a reference to a node and add the file to
+         * @param node
+         * @return
+         * @throws Exception
+         */
+        public LocalFileInfo addLocalFileInfo(Node node) throws Exception {
+            // assert node reference to file
+            if (!node.isRegularFile()) {
+                throw new IllegalArgumentException("Bad file (is not regular file): " + node.getPath().toString());
+            }
+
+            // TODO: extract file metadata from name
+            var filePath = node.getPath();
+            var basename = filePath.getBasename();
+            var dirname = filePath.getDirname();
+            // extract metadata
+            var metadata = new FilenameMetadata(basename);
+            // extract search path
+            var searchPath = dirname.createSubfile(metadata.getSimpleName());
+            // assert search path is ok:
+            if (!isValidPathName(searchPath)) {
+                throw new RuntimeException("Invalid search path ("
+                    + searchPath + ") for file: " + node.getPath().toString());
+            }
+            // if the file should be renamed after this check
+            boolean shouldMove = false;
+            // if is corrupted do nothing
+            if (metadata.isCorrupted()) {
+                // do nothing
+            } else if (metadata.isTemporary()) {
+                // not @tmp should be found after restart, mark as corrupted
+                metadata.setCorrupted(true);
+                shouldMove = true;
+            } else if (metadata.getTimestamp() == null) {
+                // set timestamp
+                metadata.setTimestamp(startInstant);
+                shouldMove = true;
+            }
+            node.setLastModified(metadata.getTimestamp());
+            // should rename the file?
+            if (shouldMove) {
+                // new file name
+                var finalName = metadata.toString();
+                var dstPath = dirname.createSubfile(finalName);
+                var f = FutureMoveCommand.move(executor, filePath, dstPath, identity);
+                // wait for move completion
+                f.get();
+                // new filePath
+                filePath = dstPath;
+                // update node
+                node.rename(dstPath);
+            }
+            // Search for other file versions
+            var lfi = localFiles.computeIfAbsent(searchPath.toString(), LocalFileInfo::new);
+            // add new version
+            var version = lfi.addVersion(node, metadata);
+            return lfi;
+        }
+
+        public void handleRegularFileInfo() throws Exception {
+            for (var rf : snapshot.getRegularFileNodes()) {
+                addLocalFileInfo(rf);
+            }
+        }
+
+        /**
+         * Return array of suppliable files
+         */
+        public LocalFileInfo[] getSuppliableFiles() {
+            return localFiles.values().stream()
+                .filter(LocalFileInfo::hasSuppliableVersion)
+                .toArray(LocalFileInfo[]::new);
+        }
+
+        public String suppliableFilesAsJson(boolean prettyPrinting, boolean detailed) {
+            var gBuilder = new GsonBuilder()
+                .registerTypeAdapter(ManagedFileSystemStatus.LocalFileInfo.class, new LocalFileVersionGson(detailed));
+            if (prettyPrinting) {
+                gBuilder = gBuilder.setPrettyPrinting();
+            }
+            // add reference to serializer
+            var gson = gBuilder.create();
+            var files = getSuppliableFiles();
+            var json = gson.toJson(files);
+            return json;
+        }
+
+        public String suppliableFilesAsJson(boolean prettyPrinting) {
+            return suppliableFilesAsJson(prettyPrinting, false);
+        }
+
+        public String suppliableFilesAsJson() {
+            return suppliableFilesAsJson(false);
+        }
+
         // return list of empty directories
         public List<Node> findEmptyDirectories() {
             return snapshot.filter(n -> n.isDirectory() && n.countChildren() == 0);
@@ -389,8 +726,8 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         // test
-        private void assertValidNames() {
-            var badFiles = Arrays.stream(snapshot.getAllNodes())
+        private void assertValidDirectoryNames() {
+            var badFiles = Arrays.stream(snapshot.getDirectorysNodes())
                 .filter(n -> !n.isRoot())
                 .filter(n -> !isValidPathName(n.getPath()))
                 .toArray(Node[]::new);
@@ -403,7 +740,7 @@ public class SimpleCDNHandler implements RequestHandler {
             }
         }
 
-        // calculate file hashes
+        // calculate file hashes and sizes
         private void calculateFileHashes() throws InterruptedException, ExecutionException {
             // get only regular files
             var fileNodes = snapshot.getRegularFileNodes();
@@ -455,9 +792,11 @@ public class SimpleCDNHandler implements RequestHandler {
             var f = ListTreeCommand.explore(executor, "", identity);
             snapshot = f.get();
             // check all names are valid
-            assertValidNames();
+            assertValidDirectoryNames();
             // calculate file hashes
             calculateFileHashes();
+            // move (if necessary) and extract metadata from regular files
+            handleRegularFileInfo();
 
             // put snapshot inside a mutable structure
             // in order to facilitate upload/deletion
@@ -466,7 +805,6 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         private class NodeGson implements JsonSerializer<Node> {
-
             @Override
             public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
                 var jObj = new JsonObject();
@@ -476,7 +814,6 @@ public class SimpleCDNHandler implements RequestHandler {
                 jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
                 return jObj;
             }
-
         }
 
         public String regularFilesInfoToJson(boolean prettyPrinting) {
@@ -496,6 +833,49 @@ public class SimpleCDNHandler implements RequestHandler {
 
         public String regularFilesInfoToJson() {
             return regularFilesInfoToJson(false);
+        }
+    }
+
+    /**
+     * Gson serializer for LocalFileInfo.Version
+     * When serializing, present only the newest version,
+     * others are only for internal usage
+     */
+    public class LocalFileVersionGson implements JsonSerializer<ManagedFileSystemStatus.LocalFileInfo> {
+        private boolean detailed = false;
+
+        public LocalFileVersionGson() {
+        }
+
+        public LocalFileVersionGson(boolean printDetailed) {
+            detailed = printDetailed;
+        }
+
+        @Override
+        public JsonElement serialize(ManagedFileSystemStatus.LocalFileInfo src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.addProperty("SearchPath", src.getSearchPath());
+            if (!detailed) {
+                var v = src.getLastSuppliableVersion();
+                jObj.addProperty("Size", v.getSize());
+                jObj.addProperty("HashAlgorithm", v.getHashAlgotrithm());
+                jObj.addProperty("Hash", bytesToHex(v.getFileHash()));
+                jObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
+            } else {
+                var versions = src.getAllVersions();
+                var jArray = new JsonArray(versions.length);
+                for (var v : versions) {
+                    var vObj = new JsonObject();
+                    vObj.addProperty("Size", v.getSize());
+                    vObj.addProperty("HashAlgorithm", v.getHashAlgotrithm());
+                    vObj.addProperty("Hash", bytesToHex(v.getFileHash()));
+                    vObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
+                    vObj.addProperty("RealPath", v.getPath().toString());
+                    jArray.add(vObj);
+                }
+                jObj.add("Versions", jArray);
+            }
+            return jObj;
         }
     }
 
@@ -563,6 +943,9 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         threadPool = Executors.newCachedThreadPool();
 
+        // UTC start time
+        startInstant = Instant.now();
+
         // configuration is read inside constructor - so it is handled at startup!
         // discover owned files
         fsStatus = new ManagedFileSystemStatus();
@@ -574,6 +957,8 @@ public class SimpleCDNHandler implements RequestHandler {
         //  discover topology
         //  find previous node
         //  start replication strategy
+        startControlThread();
+
 
         //  start client endpoint
         startClientEndpoints();
@@ -746,13 +1131,20 @@ public class SimpleCDNHandler implements RequestHandler {
             try {                
                 switch (exchange.getRequestMethod()) {
                     case "GET":
-                        var requestedFile = exchange.getRequestURI().getPath();
+                        var requestedFile = exchange.getRequestURI().getPath().substring(1);
                         // check if current node is file supplier or redirect
                         if (SimpleCDNHandler.this.testSupplyabilityOrRedirect(requestedFile, exchange)) {
-                            try {
-                                // recicle old working code
-                                HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity);
-                            } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+                            // prevent clients from directly accessing local files
+                            var truePath = fsStatus.findTruePath(requestedFile);
+                            if (truePath == null) {
+                                // return 404
+                                httpNotFound(exchange);
+                            } else {
+                                try {
+                                    // recicle old working code
+                                    HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity, truePath);
+                                } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+                            }
                         }
                         break;
                     default:
@@ -862,6 +1254,16 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, me);
         }
 
+        private void sendSuppliableFileInfo(HttpExchange exchange) throws IOException {
+            var info = fsStatus.suppliableFilesAsJson();
+            sendJson(exchange, info);
+        }
+
+        private void sendSuppliableFileInfoDetailed(HttpExchange exchange) throws IOException {
+            var info = fsStatus.suppliableFilesAsJson(true, true);
+            sendJson(exchange, info);
+        }
+
         private void sendFileStatistics(HttpExchange exchange) throws IOException {
             var me = clientStatsCollector.asJson();
             sendJson(exchange, me);
@@ -887,6 +1289,14 @@ public class SimpleCDNHandler implements RequestHandler {
                             else if (path.equals("storage")) {
                                 // return topology
                                 sendLocalStorageInfo(exchange);
+                            }
+                            else if (path.equals("suppliables")) {
+                                // return topology
+                                sendSuppliableFileInfo(exchange);
+                            }
+                            else if (path.equals("detailedSuppliables")) {
+                                // return topology
+                                sendSuppliableFileInfoDetailed(exchange);
                             }
                             else if (path.equals("stats")) {
                                 // return file statistics
@@ -1023,15 +1433,48 @@ public class SimpleCDNHandler implements RequestHandler {
 
         }
 
-        @Override
-        public void run() {
-            // TODO Auto-generated method stub
-            super.run();
+        private void handleRunningStatus() {
+
         }
 
+        @Override
+        public void run() {
+            handleJoinProtocol();
+            handleRunningStatus();
+            handleExitProtocol();
+        }
+
+        /**
+         * Before:
+         *  current node status must be DataNodeDescriptor.Status.SHUTDOWN
+         * After:
+         *  current node status must be DataNodeDescriptor.Status.RUNNING
+         */
+        public void waitForStartingProtocolCompletion() {
+            if (thisnode.status != DataNodeDescriptor.Status.SHUTDOWN) {
+                throw new RuntimeException("Node status is not SHUTDOWN: " + thisnode.status);
+            }
+
+            ;
+        }
+
+        /**
+         * Before:
+         *  current node status must be DataNodeDescriptor.Status.RUNNING
+         * After:
+         *  current node status must be DataNodeDescriptor.Status.SHUTDOWN
+         */
+        public void waitForStoppingProtocolCompletion() {
+            if (thisnode.status != DataNodeDescriptor.Status.RUNNING) {
+                throw new RuntimeException("Node status is not RUNNING: " + thisnode.status);
+            }
+
+            ;
+        }
     }
     private ControlThread controlThread;
 
+    // start control thread, return when JOIN protocol is terminated
     private void startControlThread() {
         if (controlThread != null) {
             throw new RuntimeException("Control thread already started");
@@ -1039,6 +1482,8 @@ public class SimpleCDNHandler implements RequestHandler {
         // ...
         controlThread = new ControlThread();
         controlThread.start();
+        controlThread.waitForStartingProtocolCompletion();
+
     }
 
     private void stopControlThread() {
@@ -1047,6 +1492,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         // ...
         controlThread.interrupt();
+        controlThread.waitForStoppingProtocolCompletion();
         try {
             controlThread.join();
         } catch (InterruptedException e) {

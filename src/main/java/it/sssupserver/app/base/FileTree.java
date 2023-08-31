@@ -2,6 +2,7 @@ package it.sssupserver.app.base;
 
 import java.io.PrintStream;
 import java.lang.reflect.Type;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -37,6 +38,17 @@ public class FileTree {
         private String hashAlgorithm;
         private byte[] fileHash;
 
+        // UTC timestamp associated with
+        public Instant lastModified;
+
+        public Instant getLastModified() {
+            return lastModified;
+        }
+
+        public void setLastModified(Instant lastModified) {
+            this.lastModified = lastModified;
+        }
+
         // -1 means unknown size
         private long size = -1;
 
@@ -69,6 +81,38 @@ public class FileTree {
             return path;
         }
 
+        /**
+         * Check new name is valid and change if only if
+         * it change only the basename.
+         * Cannot rename diretories.
+         * Is a rename (i.e.: change only basename), NOT a move!
+         */
+        public void rename(Path newPath) {
+            // check tipe equivalence
+            if (newPath.isDir() != getPath().isDir()) {
+                throw new IllegalArgumentException("Current and new path must refer to the same type of object");
+            }
+            // only for regular files
+            if (!isRegularFile()) {
+                throw new RuntimeException("Cannot rename non-regular file: " + this.toString());
+            }
+            // same path
+            if (this.path.getPath().length != newPath.getPath().length) {
+                throw new IllegalArgumentException("Path of different lengh: '"
+                    + this.path.getPath() + "' and '"
+                    + newPath.getPath().toString() + "'");
+            }
+            for (var i=0; i<this.getPath().getPath().length-1; ++i) {
+                if (!this.path.getPath()[i].equals(newPath.getPath()[i])) {
+                    throw new IllegalArgumentException("Mismatch between: '"
+                    + this.path.getPath() + "' and '"
+                    + newPath.getPath().toString() + "'");
+                }
+            }
+            // change path
+            this.path = newPath.clone();
+        }
+
         // special role assigned to root
         public boolean isRoot() {
             return this == FileTree.this.root;
@@ -77,6 +121,10 @@ public class FileTree {
         public Node(Node parentNode, Path path) {
             this.parentNode = parentNode;
             this.path = path;
+        }
+
+        public boolean isRegularFile() {
+            return !isDirectory();
         }
 
         public boolean isDirectory() {

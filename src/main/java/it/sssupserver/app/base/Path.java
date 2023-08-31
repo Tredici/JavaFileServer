@@ -8,7 +8,7 @@ import java.util.regex.*;
  * Represent the path identifying a file
  * or a directory on the file server
  */
-public class Path {
+public class Path implements Cloneable {
     private static Predicate<String> test;
     static {
         var re = "[/\\w\\.\\s-@]+";
@@ -56,8 +56,9 @@ public class Path {
         this.isDir = isDir;
     }
 
-    private Path(String[] items) {
+    private Path(String[] items, boolean isDir) {
         this.path = items;
+        this.isDir = isDir;
     }
 
     /**
@@ -84,10 +85,10 @@ public class Path {
     public Path child()
     {
         if (this.path.length == 0) {
-            return new Path(new String[0]);
+            return new Path(new String[0], this.isDir);
         } else {
             var tmp = Arrays.copyOfRange(this.path, 1, this.path.length);
-            return new Path(tmp);
+            return new Path(tmp, this.isDir);
         }
     }
 
@@ -113,5 +114,51 @@ public class Path {
     public String toString()
     {
         return String.join("/", getPath());
+    }
+
+    /**
+     * Return the last component of the path
+     * Linux: basename
+     */
+    public String getBasename() {
+        if (this.path.length == 0) {
+            return "";
+        } else {
+            return this.path[this.path.length-1];
+        }
+    }
+
+    /**
+     * Return parent component of the path
+     * Linux: dirname
+     */
+    public Path getDirname() {
+        if (this.path.length <= 1) {
+            return new Path(new String[0], true);
+        } else {
+            return new Path(Arrays.copyOfRange(this.path, 0, this.path.length-1), true);
+        }
+    }
+
+    public Path createSubElement(String name, boolean isDir) {
+        if (!this.isDir()) {
+            throw new RuntimeException("Cannot invoke createSubElement from regular file");
+        }
+        var newpath = Arrays.copyOf(this.path, this.path.length+1);
+        newpath[this.path.length] = name;
+        return new Path(newpath, isDir);
+    }
+
+    public Path createSubfile(String filename) {
+        return createSubElement(filename, false);
+    }
+
+    private Path() {}
+
+    public Path clone() {
+        var ans = new Path();
+        ans.isDir = isDir;
+        ans.path = Arrays.copyOf(this.path, this.path.length);
+        return ans;
     }
 }
