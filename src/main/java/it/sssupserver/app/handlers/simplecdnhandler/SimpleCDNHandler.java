@@ -592,6 +592,26 @@ public class SimpleCDNHandler implements RequestHandler {
                 public boolean isSuppliable() {
                     return !isCorrupted() && !isTmp();
                 }
+
+                public boolean matchMetadata(FilenameMetadata metadata) {
+                    return isCorrupted() == metadata.isCorrupted()
+                        && isTmp() == metadata.isTemporary()
+                        && metadata.getTimestamp().equals(node.getLastModified());
+                }
+
+                /**
+                 * Generate ETag header to be used in HTTP messages
+                 *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/ETag
+                 *
+                 * Tag is composed by:
+                 *  timestamp:file_size:hash_algoritm:hash_string
+                 */
+                public String generateHttpETagHeader() {
+                    return node.getLastModified().toEpochMilli()
+                        + ":" + node.getSize()
+                        + ":" + node.getHashAlgorithm()
+                        + ":" + bytesToHex(node.getFileHash());
+                }
             }
 
             public Version addVersion(FileTree.Node node, FilenameMetadata metadata) {
@@ -633,10 +653,41 @@ public class SimpleCDNHandler implements RequestHandler {
                 }
                 return ans;
             }
+
+            public Version searchVersionByMetadata(FilenameMetadata metadata) {
+                LocalFileInfo.Version ans = null;
+                if (metadata != null && metadata.holdMetadata()) {
+                    // there is a version corresponding to supplied metadata?
+                    for (var version : this.versions) {
+                        // find right version
+                        if (version.matchMetadata(metadata)) {
+                            ans = version;
+                            break;
+                        }
+                    }
+                } else {
+                    // return last available version if not metadata found
+                    ans = getLastSuppliableVersion();
+                }
+                return ans;
+            }
         }
 
         // Concurrent map of local available files
         private ConcurrentSkipListMap<String, LocalFileInfo> localFiles = new ConcurrentSkipListMap<>();
+
+        public LocalFileInfo.Version searchVersionByMetadata(String searchPath, FilenameMetadata metadata) {
+            LocalFileInfo.Version ans = null;
+            // search file by name
+            var lfi = localFiles.get(searchPath);
+            if (lfi == null) {
+                // not found
+                return null;
+            }
+            // check metadata
+            ans = lfi.searchVersionByMetadata(metadata);
+            return ans;
+        }
 
         /**
          * Map searchPath for a file (the one receiven in
@@ -1266,6 +1317,18 @@ public class SimpleCDNHandler implements RequestHandler {
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
+    /**
+     * 304 Not Modified
+     *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304
+     */
+    private void httpNotModified(HttpExchange exchange) {
+        try {
+            exchange.sendResponseHeaders(304, 0);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+    }
+
     private void httpBadRequest(HttpExchange exchange, String error) {
         try {
             // 400 Bad request
@@ -1293,9 +1356,19 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     private void httpNotFound(HttpExchange exchange) {
+        httpNotFound(exchange, null);
+    }
+
+    private void httpNotFound(HttpExchange exchange, String error) {
         try {
             exchange.sendResponseHeaders(404, 0);
-            exchange.getResponseBody().flush();
+            if (error != null && !error.isBlank()) {
+                var os = exchange.getResponseBody();
+                os.write(error.getBytes(StandardCharsets.UTF_8));
+                os.flush();;
+            } else {
+                exchange.getResponseBody().flush();
+            }
             exchange.close();
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
@@ -1536,6 +1609,61 @@ public class SimpleCDNHandler implements RequestHandler {
     private class FileManagementHttpHandler implements HttpHandler {
         public static final String PATH = "/file";
 
+        private void handleGET(HttpExchange exchange) throws Exception {
+            // path to requsted file
+            var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath().toString();
+            // check if specific version of the file was required
+            // extract metadata
+            it.sssupserver.app.base.Path receivedPath = null;
+            FilenameMetadata metadata = null;
+            try {
+                // try to parse received path
+                receivedPath = new it.sssupserver.app.base.Path(requestedFile);
+            } catch (Exception e) {
+                httpBadRequest(exchange, "Bad path: " + requestedFile);
+                return;
+            }
+            // does path contains metadata?
+            metadata = new FilenameMetadata(receivedPath.getBasename());
+            // get dirname
+            var dirname = receivedPath.getDirname();
+            // extract searchPath
+            var searchPath = dirname.createSubfile(metadata.getSimpleName());
+            if (!testSupplyabilityOrRedirect(searchPath.toString(), exchange)) {
+                // file not available here
+                return;
+            }
+            // search file version by metadata
+            var candidateVersion = fsStatus.searchVersionByMetadata(searchPath.toString(), metadata);
+            if (candidateVersion == null) {
+                // 404 NOT FOUND
+                httpNotFound(exchange, "File not found: " + requestedFile);
+                return;
+            }
+            // check ETah HTTP header
+            // ETag parameter for the local file version
+            var localETag = candidateVersion.generateHttpETagHeader();
+            if (exchange.getRequestHeaders().containsKey("ETag"))
+            {
+                // ETag parameter found in request
+                var reqETag = exchange.getRequestHeaders().getFirst("ETag");
+                // if they are equals do not send response back
+                if (localETag.equals(reqETag)) {
+                    // content not modified
+                    httpNotModified(exchange);
+                    return;
+                }
+            }
+            // prepare to send back response
+            var resH = exchange.getResponseHeaders();
+            resH.set("ETag", localETag);
+            // path of the file effectively returned
+            var truePath = candidateVersion.getPath();
+            // send file back
+            HttpSchedulableReadCommand.handle(executor, exchange, identity, truePath);
+            // DONE            
+        }
+
         private void handlePUT(HttpExchange exchange) throws Exception {
             // handle upload of file - a file is received by an admin application
             long receivedFileSize = 0;
@@ -1655,7 +1783,9 @@ public class SimpleCDNHandler implements RequestHandler {
             try {
                 switch (exchange.getRequestMethod()) {
                     case "GET":
-                        // download file - same as for users
+                        // download file - same as for users but include
+                        // metadata inside HTTP response headers
+                        handleGET(exchange);
                         break;
                     case "DELETE":
                         // delete file - handle deletion protocol
