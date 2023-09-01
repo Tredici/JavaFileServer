@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -274,6 +275,7 @@ public class FileTree {
         if (getRoot() != null) {
             getRoot().dfsNodes(ans, n -> true);
         }
+        ans.addAll(outNode);
         return ans.toArray(new Node[0]);
     }
 
@@ -283,6 +285,13 @@ public class FileTree {
         if (getRoot() != null) {
             getRoot().dfs(ans, n -> !n.isDirectory());
         }
+        ans.addAll(
+            Arrays.asList(
+                outNode.stream()
+                .map(n -> n.getPath())
+                .toArray(Path[]::new)
+            )    
+        );
         return ans.toArray(new Path[0]);
     }
 
@@ -291,6 +300,8 @@ public class FileTree {
         if (getRoot() != null) {
             getRoot().dfsNodes(ans, n -> !n.isDirectory());
         }
+        // include out of tree nodes
+        ans.addAll(outNode);
         return ans.toArray(new Node[0]);
     }
 
@@ -325,5 +336,17 @@ public class FileTree {
             root.dfsNodes(ans, fun);
         }
         return ans;
+    }
+    
+    private ConcurrentLinkedQueue<Node> outNode = new ConcurrentLinkedQueue<>();
+    // used to add child nodes out of the tree
+    public Node addNode(Path path) {
+        if (path.isDir()) {
+            throw new IllegalArgumentException(
+                "Cannot add path to directory: " + path.toString());
+        }
+        var node = new Node(null, path);
+        outNode.add(node);
+        return node;
     }
 }
