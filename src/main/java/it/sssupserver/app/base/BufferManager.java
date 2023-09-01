@@ -115,6 +115,10 @@ public class BufferManager {
         }
     }
 
+    public static int getBufferSize() {
+        return buffer_size;
+    }
+
     private static BlockingQueue<ByteBuffer> bufferQueue = new ArrayBlockingQueue<>(DEFAULT_BUFFER_COUNT);
 
     public static class BufferWrapper implements AutoCloseable {
