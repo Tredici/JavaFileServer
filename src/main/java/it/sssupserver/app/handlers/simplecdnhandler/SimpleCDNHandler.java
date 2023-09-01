@@ -15,15 +15,22 @@ import com.google.gson.JsonSerializer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+
 import java.util.List;
 import java.util.Map;
 
+import it.sssupserver.app.base.BufferManager;
 import it.sssupserver.app.base.FileTree;
+import it.sssupserver.app.base.BufferManager.BufferWrapper;
 import it.sssupserver.app.base.FileTree.Node;
 import it.sssupserver.app.commands.utils.FileReducerCommand;
+import it.sssupserver.app.commands.utils.FutureDeleteCommand;
 import it.sssupserver.app.commands.utils.FutureFileSizeCommand;
+import it.sssupserver.app.commands.utils.FutureMkdirCommand;
 import it.sssupserver.app.commands.utils.FutureMoveCommand;
 import it.sssupserver.app.commands.utils.ListTreeCommand;
+import it.sssupserver.app.commands.utils.QueableCommand;
+import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
@@ -284,6 +291,7 @@ public class SimpleCDNHandler implements RequestHandler {
     // respond with redirect message for supplied file
     // return true if current node own specified file
     // NOTE: test OWNERSHIP, not ability to supply it!
+    // should not consider initial "/"
     public boolean testOwnershipOrRedirect(String path, HttpExchange exchange) {
         if (topology.isFileOwned(path)) {
             return true;
@@ -309,6 +317,7 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     // test if this node is allowed to return specified file
+    // should not consider initial "/"
     public boolean testSupplyabilityOrRedirect(String path, HttpExchange exchange) {
         if (topology.isFileSupplier(path)) {
             return true;
@@ -394,6 +403,95 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
+    // Helper class used to parse true path names in order to
+    // extract
+    private static class FilenameMetadata {
+        // Filename structure:
+        //  "{regular file name character}
+        //   (@\d: timestamp)?
+        //   (@corrupted)?
+        //   (@tmp)?"
+
+        private String simpleName;
+        private Instant timestamp;
+        private boolean corrupted;
+        private boolean temporary;
+
+        public FilenameMetadata(String filename) {
+            // regex and parse
+            var m = fileMetadataPattern.matcher(filename);
+            if (!m.find()) {
+                throw new RuntimeException("No pattern (" + fileMetadataPattern.pattern()
+                    + ") recognised in filename: " + filename);
+            }
+            simpleName = m.group("simpleName");
+            var time = m.group("timestamp");
+            var corr = m.group("corrupted");
+            var tmp = m.group("temporary");
+            if (time != null) {
+                this.timestamp = Instant.ofEpochMilli(Long.parseLong(time));
+            }
+            if (corr != null) {
+                this.corrupted = true;
+            }
+            if (tmp != null) {
+                this.temporary = true;
+            }
+        }
+
+        /**
+         * Return string before first '@'
+         * @return
+         */
+        public String getSimpleName() {
+            return simpleName;
+        }
+
+        public void setTimestamp(Instant timestamp) {
+            this.timestamp = timestamp;
+        }
+
+        public Instant getTimestamp() {
+            return timestamp;
+        }
+
+        public void setCorrupted(boolean corrupted) {
+            this.corrupted = corrupted;
+        }
+
+        public boolean isCorrupted() {
+            return corrupted;
+        }
+
+        public void setTemporary(boolean temporary) {
+            this.temporary = temporary;
+        }
+
+        public boolean isTemporary() {
+            return temporary;
+        }
+
+        // used to test if any data was extracted from the file name
+        public boolean holdMetadata() {
+            return timestamp != null || corrupted || temporary;
+        }
+
+        public String toString() {
+            var sb = new StringBuffer();
+            sb.append(simpleName);
+            if (timestamp != null) {
+                sb.append('@').append(timestamp.toEpochMilli());
+            }
+            if (isTemporary()) {
+                sb.append("@tmp");
+            }
+            if (isCorrupted()) {
+                sb.append("@corrupted");
+            }
+            return sb.toString();
+        }
+    }
+
     /**
      * This class maintains a view of the files
      * managed by this DataNode.
@@ -406,6 +504,11 @@ public class SimpleCDNHandler implements RequestHandler {
 
         // Maintain a view of the file tree managed by this replica node
         FileTree snapshot;
+
+        // add new file node
+        public FileTree.Node addRegularFileNode(it.sssupserver.app.base.Path path) {
+            return snapshot.addNode(path);
+        } 
 
         // putting restrictions on directory and file names
         // allow us to
@@ -548,90 +651,6 @@ public class SimpleCDNHandler implements RequestHandler {
                 return null;
             }
             return v.getPath();
-        }
-
-        // Helper class used to parse true path names in order to
-        // extract
-        private class FilenameMetadata {
-            // Filename structure:
-            //  "{regular file name character}
-            //   (@\d: timestamp)?
-            //   (@corrupted)?
-            //   (@tmp)?"
-
-            private String simpleName;
-            private Instant timestamp;
-            private boolean corrupted;
-            private boolean temporary;
-
-            public FilenameMetadata(String filename) {
-                // regex and parse
-                var m = fileMetadataPattern.matcher(filename);
-                if (!m.find()) {
-                    throw new RuntimeException("No pattern (" + fileMetadataPattern.pattern()
-                        + ") recognised in filename: " + filename);
-                }
-                simpleName = m.group("simpleName");
-                var time = m.group("timestamp");
-                var corr = m.group("corrupted");
-                var tmp = m.group("temporary");
-                if (time != null) {
-                    this.timestamp = Instant.ofEpochMilli(Long.parseLong(time));
-                }
-                if (corr != null) {
-                    this.corrupted = true;
-                }
-                if (tmp != null) {
-                    this.temporary = true;
-                }
-            }
-
-            /**
-             * Return string before first '@'
-             * @return
-             */
-            public String getSimpleName() {
-                return simpleName;
-            }
-
-            public void setTimestamp(Instant timestamp) {
-                this.timestamp = timestamp;
-            }
-
-            public Instant getTimestamp() {
-                return timestamp;
-            }
-
-            public void setCorrupted(boolean corrupted) {
-                this.corrupted = corrupted;
-            }
-
-            public boolean isCorrupted() {
-                return corrupted;
-            }
-
-            public void setTemporary(boolean temporary) {
-                this.temporary = temporary;
-            }
-
-            public boolean isTemporary() {
-                return temporary;
-            }
-
-            public String toString() {
-                var sb = new StringBuffer();
-                sb.append(simpleName);
-                if (timestamp != null) {
-                    sb.append('@').append(timestamp.toEpochMilli());
-                }
-                if (isTemporary()) {
-                    sb.append("@tmp");
-                }
-                if (isCorrupted()) {
-                    sb.append("@corrupted");
-                }
-                return sb.toString();
-            }
         }
 
         /**
@@ -1230,6 +1249,38 @@ public class SimpleCDNHandler implements RequestHandler {
         return json;
     }
 
+    private void httpOk(HttpExchange exchange, String error) {
+        try {
+            // 200 OK
+            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200
+            exchange.sendResponseHeaders(200, 0);
+            if (error != null && !error.isBlank()) {
+                var os = exchange.getResponseBody();
+                os.write(error.getBytes(StandardCharsets.UTF_8));
+                os.flush();;
+            } else {
+                exchange.getResponseBody().flush();
+            }
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+    }
+
+    private void httpBadRequest(HttpExchange exchange, String error) {
+        try {
+            // 400 Bad request
+            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+            exchange.sendResponseHeaders(400, 0);
+            if (error != null && !error.isBlank()) {
+                var os = exchange.getResponseBody();
+                os.write(error.getBytes(StandardCharsets.UTF_8));
+                os.flush();;
+            } else {
+                exchange.getResponseBody().flush();
+            }
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+    }
+
     private void methodNotAllowed(HttpExchange exchange) {
         try {
             // 405 Method Not Allowed
@@ -1484,6 +1535,112 @@ public class SimpleCDNHandler implements RequestHandler {
     private class FileManagementHttpHandler implements HttpHandler {
         public static final String PATH = "/file";
 
+        private void handlePUT(HttpExchange exchange) throws Exception {
+            // handle upload of file - a file is received by an admin application
+
+            // extract path to file
+            var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath().toString();
+            it.sssupserver.app.base.Path receivedPath = null;
+            FilenameMetadata metadata = null;
+            // check if path is ok - no '@' inside, isValidPathName
+            {
+                boolean badPath = false;
+                try {
+                    receivedPath = new it.sssupserver.app.base.Path(requestedFile);
+                    // extract medatada
+                    metadata = new FilenameMetadata(receivedPath.getBasename());
+                    if (metadata.holdMetadata() || requestedFile.contains("@")) {
+                        badPath = true;
+                    }
+                } catch (Exception e) {
+                    badPath = true;
+                }
+                if (badPath) {
+                    httpBadRequest(exchange, "Bad path: " + requestedFile);
+                    return;
+                }
+            }
+            var dirname = receivedPath.getDirname();
+            // is this node owner of the file? Otherwise redirect
+            if (!testOwnershipOrRedirect(PATH, exchange)) {
+                return;
+            }
+            // get timestamp used to track file
+            metadata.setTimestamp(Instant.now());
+            // generate temporary download file name - "@tmp"
+            metadata.setTemporary(true);
+            var temporaryFilename = dirname.createSubfile(metadata.toString());
+            // assert directory path creation
+            FutureMkdirCommand.create(executor, dirname, identity).get();
+            {
+                long contentLength;
+                var contentLengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
+                if (contentLengthHeader != null) {
+                    contentLength = Long.parseLong(contentLengthHeader);
+                } else {
+                    // just for safety
+                    contentLength = Long.MAX_VALUE;
+                }
+                var is = exchange.getRequestBody();
+                var bfsz = BufferManager.getBufferSize();
+                var tmp = new byte[bfsz];
+                BufferWrapper bufWrapper;
+                int len;
+                java.nio.ByteBuffer buf;
+                // extract expected file size
+
+                bufWrapper = BufferManager.getBuffer();
+                buf = bufWrapper.get();
+                // read until data availables or buffer filled
+                while (contentLength > 0 && buf.hasRemaining()) {
+                    len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
+                    if (len == -1) {
+                        break;
+                    }
+                    contentLength -= len;
+                    buf.put(tmp, 0, len);
+                }
+                buf.flip();
+                // create file locally and start storing it
+                QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
+                // store file piece by piece
+                while (is.available() > 0 && contentLength > 0) {
+                    // take a new buffer
+                    bufWrapper = BufferManager.getBuffer();
+                    buf = bufWrapper.get();
+                    // fill this buffer
+                    while (contentLength > 0 && buf.hasRemaining()) {
+                        len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
+                        if (len == -1) {
+                            break;
+                        }
+                        contentLength -= len;
+                        buf.put(tmp, 0, len);
+                    }
+                    buf.flip();
+                    // append new
+                    queable.enqueue(bufWrapper);
+                }
+                // wait for completion
+                var success = queable.getFuture().get();
+                if (!success) {
+                    // delete temporary file
+                    FutureDeleteCommand.delete(executor, temporaryFilename, identity);
+                    throw new RuntimeException("Error while creating file: " + temporaryFilename);
+                }
+            }
+            // rename file with final name - i.e. remove "@tmp"
+            metadata.setTemporary(false);
+            var finalName = dirname.createSubfile(metadata.toString());
+            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity);
+            // add save new reference to file as available
+            var newNode = fsStatus.addRegularFileNode(finalName);
+            fsStatus.addLocalFileInfo(newNode);
+            // TODO: delete possible old versions
+            // send ok
+            httpOk(exchange, "File saved as: " + finalName);
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
@@ -1496,12 +1653,16 @@ public class SimpleCDNHandler implements RequestHandler {
                         break;
                     case "PUT":
                         // upload - handle replication protocol
+                        handlePUT(exchange);
                         break;
                     default:
                         methodNotAllowed(exchange);
                 }
             } catch (Exception e) {
                 System.err.println(e);
+                e.printStackTrace();
+                // handle unexpected error
+                httpInternalServerError(exchange);
             }
         }
 
