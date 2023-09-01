@@ -43,6 +43,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1466,7 +1467,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         private void sendSuppliableFileInfoDetailedWithIdentity(HttpExchange exchange) throws IOException {
-            var info = suppliableFilesWithIdentity(false, false);
+            var info = suppliableFilesWithIdentity(false, true);
             sendJson(exchange, info);
         }
 
@@ -1537,7 +1538,8 @@ public class SimpleCDNHandler implements RequestHandler {
 
         private void handlePUT(HttpExchange exchange) throws Exception {
             // handle upload of file - a file is received by an admin application
-
+            long receivedFileSize = 0;
+            var md = MessageDigest.getInstance(ManagedFileSystemStatus.HASH_ALGORITHM);
             // extract path to file
             var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath().toString();
             it.sssupserver.app.base.Path receivedPath = null;
@@ -1598,13 +1600,15 @@ public class SimpleCDNHandler implements RequestHandler {
                         break;
                     }
                     contentLength -= len;
+                    receivedFileSize += len;
+                    md.update(tmp, 0, len);
                     buf.put(tmp, 0, len);
                 }
                 buf.flip();
                 // create file locally and start storing it
                 QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
                 // store file piece by piece
-                while (is.available() > 0 && contentLength > 0) {
+                while (contentLength > 0) {
                     // take a new buffer
                     bufWrapper = BufferManager.getBuffer();
                     buf = bufWrapper.get();
@@ -1615,6 +1619,8 @@ public class SimpleCDNHandler implements RequestHandler {
                             break;
                         }
                         contentLength -= len;
+                        receivedFileSize += len;
+                        md.update(tmp, 0, len);
                         buf.put(tmp, 0, len);
                     }
                     buf.flip();
@@ -1635,6 +1641,9 @@ public class SimpleCDNHandler implements RequestHandler {
             FutureMoveCommand.move(executor, temporaryFilename, finalName, identity);
             // add save new reference to file as available
             var newNode = fsStatus.addRegularFileNode(finalName);
+            // Compute size
+            newNode.setSize(receivedFileSize);
+            newNode.setFileHash(ManagedFileSystemStatus.HASH_ALGORITHM, md.digest());
             fsStatus.addLocalFileInfo(newNode);
             // TODO: delete possible old versions
             // send ok
