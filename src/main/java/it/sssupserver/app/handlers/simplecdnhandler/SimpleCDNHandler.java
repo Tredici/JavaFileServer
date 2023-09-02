@@ -339,6 +339,50 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
+    public boolean testOwnershipOrRedirectToManagement(String path, HttpExchange exchange) {
+        if (topology.isFileOwned(path)) {
+            return true;
+        } else {
+            var owner = topology.getFileOwner(path);
+            var index = (int)(owner.managerendpoint.length * Math.random());
+            var redirect = owner.managerendpoint[index];
+            try {
+                // 308 Permanent Redirect
+                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
+                exchange.sendResponseHeaders(404, 0);
+                // Set Location header
+                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
+                exchange.getResponseHeaders()
+                    .add("Location", redirect.toURI().resolve(path).toString());
+                exchange.getResponseBody().flush();
+                exchange.close();
+            } catch (Exception e) {
+                // TODO: should only log error
+            }
+            return false;
+        }
+    }
+
+    public boolean testSupplyabilityOrRedirectToManagement(String path, HttpExchange exchange) {
+        if (topology.isFileSupplier(path)) {
+            return true;
+        } else {
+            var owner = topology.peekRandomSupplier(path);
+            var index = (int)(owner.managerendpoint.length * Math.random());
+            var redirect = owner.managerendpoint[index];
+            try {
+                exchange.sendResponseHeaders(404, 0);
+                exchange.getResponseHeaders()
+                    .add("Location", redirect.toURI().resolve(path).toString());
+                exchange.getResponseBody().flush();
+                exchange.close();
+            } catch (Exception e) {
+                // TODO: should only log error
+            }
+            return false;
+        }
+    }
+
     // initialize parameters used to check validity of file path(s)
     private static Predicate<String> directoryNameTest;
     private static Predicate<String> regularFileNameTest;
@@ -356,7 +400,7 @@ public class SimpleCDNHandler implements RequestHandler {
     // pattern used to insert metadata informations inside file names
     private static Pattern fileMetadataPattern;
     static {
-        fileMetadataPattern = Pattern.compile("^(?<simpleName>[^@]*)(@(?<timestamp>\\d+))?(?<temporary>@tmp)?(?<corrupted>@corrupted)?$");
+        fileMetadataPattern = Pattern.compile("^(?<simpleName>[^@]*)(@(?<timestamp>\\d+))?(?<temporary>@tmp)?(?<deleted>@deleted)?(?<corrupted>@corrupted)?$");
     }
 
     // directories should match "^(_|-|\+|\w)+$"
@@ -417,6 +461,7 @@ public class SimpleCDNHandler implements RequestHandler {
         private Instant timestamp;
         private boolean corrupted;
         private boolean temporary;
+        private boolean deleted;
 
         public FilenameMetadata(String filename) {
             // regex and parse
@@ -429,6 +474,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var time = m.group("timestamp");
             var corr = m.group("corrupted");
             var tmp = m.group("temporary");
+            var deleted = m.group("deleted");
             if (time != null) {
                 this.timestamp = Instant.ofEpochMilli(Long.parseLong(time));
             }
@@ -438,6 +484,26 @@ public class SimpleCDNHandler implements RequestHandler {
             if (tmp != null) {
                 this.temporary = true;
             }
+            if (deleted != null) {
+                this.deleted = true;
+            }
+        }
+
+        public FilenameMetadata(
+            String simpleName,
+            Instant timestamp,
+            boolean corrupted,
+            boolean temporary,
+            boolean deleted
+        ) {
+            if (!isValidRegularFileName(simpleName)) {
+                throw new RuntimeException("Invalid filename: " + simpleName);
+            }
+            this.simpleName = simpleName;
+            this.timestamp = timestamp;
+            this.corrupted = corrupted;
+            this.temporary = temporary;
+            this.deleted = deleted;
         }
 
         /**
@@ -472,9 +538,17 @@ public class SimpleCDNHandler implements RequestHandler {
             return temporary;
         }
 
+        public void setDeteleted(boolean deleted) {
+            this.deleted = deleted;
+        }
+
+        public boolean isDeteleted() {
+            return deleted;
+        }
+
         // used to test if any data was extracted from the file name
         public boolean holdMetadata() {
-            return timestamp != null || corrupted || temporary;
+            return timestamp != null || corrupted || temporary || deleted;
         }
 
         public String toString() {
@@ -485,6 +559,9 @@ public class SimpleCDNHandler implements RequestHandler {
             }
             if (isTemporary()) {
                 sb.append("@tmp");
+            }
+            if (isDeteleted()) {
+                sb.append("@deleted");
             }
             if (isCorrupted()) {
                 sb.append("@corrupted");
@@ -509,7 +586,7 @@ public class SimpleCDNHandler implements RequestHandler {
         // add new file node
         public FileTree.Node addRegularFileNode(it.sssupserver.app.base.Path path) {
             return snapshot.addNode(path);
-        } 
+        }
 
         // putting restrictions on directory and file names
         // allow us to
@@ -537,6 +614,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 // time associated with
                 private boolean corrupted = false;
                 private boolean tmp = false;
+                private boolean deleted;
                 // associate file with Node olding its properties
                 private FileTree.Node node;
 
@@ -582,6 +660,76 @@ public class SimpleCDNHandler implements RequestHandler {
                 // not completed file, to be
                 public boolean isTmp() {
                     return tmp;
+                }
+
+                public boolean isDeleted() {
+                    return deleted;
+                }
+
+                /**
+                 * Mark current file version as to be deleted
+                 * @throws Exception
+                 */
+                public void markAsDeleted() throws Exception {
+                    // short circuit
+                    if (isDeleted()) {
+                        // Idempotent
+                        return;
+                    }
+                    synchronized(this) {
+                        if (isDeleted()) {
+                            // Idempotent
+                            return;
+                        }
+                        var currentPath = getPath();
+                        /**
+                         * Perform renaming:
+                         *  cannot be done atomically,
+                         *  create new "deleted version"
+                         *  delete valid one
+                         */
+                        var metadata = getMetadata();
+                        // should delete
+                        metadata.setDeteleted(true);
+                        var dstPath = currentPath.getDirname()
+                            .createSubfile(metadata.toString());
+                        {
+                            // local etag
+                            var etag = generateHttpETagHeader();
+                            // get current timestamp
+                            var deletetionTS = Instant.now();
+                            // content of the file to be removed
+                            var dc = new StringBuilder()
+                                .append(etag)
+                                .append('\n')
+                                .append(deletetionTS.toEpochMilli())
+                                .append('\n')
+                                .toString();
+                            // generate content of new file
+                            var bytecontent = dc.getBytes(StandardCharsets.UTF_8);
+                            // put content in a buffer
+                            var w = BufferManager.getBuffer();
+                            var buf = w.get();
+                            buf.put(bytecontent);
+                            buf.flip();
+                            // schedule creation of file
+                            var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
+                            if (cc.getFuture().get() != true) {
+                                throw new RuntimeException("Failed to delete file: " + searchPath);
+                            }
+                        }
+                        // delete original one
+                        var f = FutureDeleteCommand.delete(executor, currentPath, identity);
+                        f.get();
+                        // change reference in Node object
+                        node.rename(dstPath);
+                        this.deleted = true;
+                    }
+                }
+
+                public FilenameMetadata getMetadata() {
+                    var basename = getPath().getBasename();
+                    return new FilenameMetadata(basename);
                 }
 
                 /**
@@ -646,7 +794,11 @@ public class SimpleCDNHandler implements RequestHandler {
                     if (candidate.isSuppliable()) {
                         if (ans == null ||
                             ans.getLastUpdateTimestamp()
-                                .compareTo(candidate.getLastUpdateTimestamp()) < 0) {
+                                .compareTo(candidate.getLastUpdateTimestamp()) < 0 ||
+                            // deleted version remplace available version
+                            (ans.getLastUpdateTimestamp()
+                                .compareTo(candidate.getLastUpdateTimestamp()) == 0
+                                && candidate.isDeleted())) {
                             ans = candidate;
                         }
                     }
@@ -689,6 +841,10 @@ public class SimpleCDNHandler implements RequestHandler {
             return ans;
         }
 
+        public LocalFileInfo.Version getLastSuppliableVersion(String searchPath) {
+            return searchVersionByMetadata(searchPath, null);
+        }
+
         /**
          * Map searchPath for a file (the one receiven in
          * HTTP requests) and map it into the local file version
@@ -699,7 +855,8 @@ public class SimpleCDNHandler implements RequestHandler {
                 return null;
             }
             var v = lfi.getLastSuppliableVersion();
-            if (v == null) {
+            /* deletions are hidden from normal clients */
+            if (v == null || v.isDeleted()) {
                 return null;
             }
             return v.getPath();
@@ -1318,6 +1475,24 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     /**
+     * 201 Created
+     *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/201
+     */
+    private void httpCreated(HttpExchange exchange, String error) {
+        try {
+            exchange.sendResponseHeaders(201, 0);
+            if (error != null && !error.isBlank()) {
+                var os = exchange.getResponseBody();
+                os.write(error.getBytes(StandardCharsets.UTF_8));
+                os.flush();;
+            } else {
+                exchange.getResponseBody().flush();
+            }
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
+    }
+
+    /**
      * 304 Not Modified
      *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304
      */
@@ -1345,7 +1520,7 @@ public class SimpleCDNHandler implements RequestHandler {
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
-    private void methodNotAllowed(HttpExchange exchange) {
+    private void httpMethodNotAllowed(HttpExchange exchange) {
         try {
             // 405 Method Not Allowed
             //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405
@@ -1357,6 +1532,16 @@ public class SimpleCDNHandler implements RequestHandler {
 
     private void httpNotFound(HttpExchange exchange) {
         httpNotFound(exchange, null);
+    }
+
+    private void httpGone(HttpExchange exchange) {
+        try {
+            // 410 Gone
+            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/410
+            exchange.sendResponseHeaders(410, 0);
+            exchange.getResponseBody().flush();
+            exchange.close();
+        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     private void httpNotFound(HttpExchange exchange, String error) {
@@ -1385,13 +1570,14 @@ public class SimpleCDNHandler implements RequestHandler {
     // Operations associated with client endpoints ++++++++++++++++++++
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     class ClientHttpHandler implements HttpHandler {
+        public static final String PATH = "/";
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
                 switch (exchange.getRequestMethod()) {
                     case "GET":
-                        var requestedFile = exchange.getRequestURI().getPath().substring(1);
+                        var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
                         // check if current node is file supplier or redirect
                         if (SimpleCDNHandler.this.testSupplyabilityOrRedirect(requestedFile, exchange)) {
                             // prevent clients from directly accessing local files
@@ -1408,7 +1594,7 @@ public class SimpleCDNHandler implements RequestHandler {
                         }
                         break;
                     default:
-                        methodNotAllowed(exchange);
+                        httpMethodNotAllowed(exchange);
                         break;
                 }
             } catch (Exception e) {
@@ -1605,7 +1791,7 @@ public class SimpleCDNHandler implements RequestHandler {
                         // for join operations and so...
                         break;
                     default:
-                        methodNotAllowed(exchange);
+                        httpMethodNotAllowed(exchange);
                 }
             } catch (Exception e) {
                 System.err.println(e);
@@ -1620,7 +1806,7 @@ public class SimpleCDNHandler implements RequestHandler {
 
         private void handleGET(HttpExchange exchange) throws Exception {
             // path to requsted file
-            var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath().toString();
+            var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
             // check if specific version of the file was required
             // extract metadata
             it.sssupserver.app.base.Path receivedPath = null;
@@ -1638,7 +1824,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var dirname = receivedPath.getDirname();
             // extract searchPath
             var searchPath = dirname.createSubfile(metadata.getSimpleName());
-            if (!testSupplyabilityOrRedirect(searchPath.toString(), exchange)) {
+            if (!testSupplyabilityOrRedirectToManagement(searchPath.toString(), exchange)) {
                 // file not available here
                 return;
             }
@@ -1647,6 +1833,9 @@ public class SimpleCDNHandler implements RequestHandler {
             if (candidateVersion == null) {
                 // 404 NOT FOUND
                 httpNotFound(exchange, "File not found: " + requestedFile);
+                return;
+            } else if (candidateVersion.isDeleted()) {
+                httpGone(exchange);
                 return;
             }
             // check ETah HTTP header
@@ -1670,7 +1859,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var truePath = candidateVersion.getPath();
             // send file back
             HttpSchedulableReadCommand.handle(executor, exchange, identity, truePath);
-            // DONE            
+            // DONE
         }
 
         private void handlePUT(HttpExchange exchange) throws Exception {
@@ -1701,7 +1890,7 @@ public class SimpleCDNHandler implements RequestHandler {
             }
             var dirname = receivedPath.getDirname();
             // is this node owner of the file? Otherwise redirect
-            if (!testOwnershipOrRedirect(PATH, exchange)) {
+            if (!testOwnershipOrRedirectToManagement(PATH, exchange)) {
                 return;
             }
             // get timestamp used to track file
@@ -1783,10 +1972,40 @@ public class SimpleCDNHandler implements RequestHandler {
             newNode.setFileHash(ManagedFileSystemStatus.HASH_ALGORITHM, md.digest());
             var lfi = fsStatus.addLocalFileInfo(newNode);
             // TODO: delete possible old versions
-            // send ok
-            httpOk(exchange, "File saved as: " + finalName);
+            // send 201 CREATED
+            httpCreated(exchange, "File saved as: " + finalName);
             // Notify new file upload to neighbours inside the topology
             scheduleNotificationForNewFileUpload(lfi);
+        }
+
+        private void handleDELETE(HttpExchange exchange) throws Exception {
+            // should always target latest available version
+            var searchPath = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
+            // can only delete last available version, then
+            // requestedFile cannot include any "@"
+            if (searchPath.contains("@")) {
+                httpBadRequest(exchange, "Bad path: " + searchPath);
+                return;
+            }
+            // only owner can accept delete
+            if (!testOwnershipOrRedirectToManagement(searchPath, exchange)) {
+                // file not available here
+                return;
+            }
+            // file available here?
+            var candidateVersion = fsStatus.getLastSuppliableVersion(searchPath);
+            if (candidateVersion == null) {
+                // 404 NOT FOUND
+                httpNotFound(exchange, "File not found: " + searchPath);
+                return;
+            } else if (candidateVersion.isDeleted()) {
+                httpGone(exchange);
+                return;
+            }
+            // require file deletion
+            candidateVersion.markAsDeleted();
+            // confirm deletion
+            httpOk(exchange, "Deleted file: " + searchPath);
         }
 
         @Override
@@ -1800,13 +2019,14 @@ public class SimpleCDNHandler implements RequestHandler {
                         break;
                     case "DELETE":
                         // delete file - handle deletion protocol
+                        handleDELETE(exchange);
                         break;
                     case "PUT":
                         // upload - handle replication protocol
                         handlePUT(exchange);
                         break;
                     default:
-                        methodNotAllowed(exchange);
+                        httpMethodNotAllowed(exchange);
                 }
             } catch (Exception e) {
                 System.err.println(e);
@@ -1993,6 +2213,17 @@ public class SimpleCDNHandler implements RequestHandler {
     private Future sendFileToDataNode(URI remoteDataNode, Path file) {
 
         return null;
+    }
+
+    /**
+     * send a GET /file/path/to/file request to a remote node to download it
+     * and store locally
+     */
+    private void downloadFileFromNode(String searchPath, long nodeId) {
+        // check if local version exists
+        var version = fsStatus.getLastSuppliableVersion(searchPath);
+        //
+        // TODO
     }
 
     // Code source:
