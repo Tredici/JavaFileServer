@@ -9,7 +9,7 @@ import com.google.gson.*;
 
 // class used to parse CDN Datanode configuration
 public class SimpleCDNConfiguration {
-    
+
     public static class HttpEndpoint {
         private URL url;
 
@@ -20,9 +20,16 @@ public class SimpleCDNConfiguration {
         public URL getUrl() {
             return url;
         }
+
+        @Override
+        public String toString() {
+            return url.toString();
+        }
     }
 
-    public static class HttpEndpointGson implements JsonDeserializer<HttpEndpoint> {
+    public static class HttpEndpointGson
+        implements JsonDeserializer<HttpEndpoint>,
+        JsonSerializer<HttpEndpoint> {
         @Override
         public HttpEndpoint deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context)
                 throws JsonParseException {
@@ -30,9 +37,18 @@ public class SimpleCDNConfiguration {
             var urlObj = (URL)context.deserialize(urlField, URL.class);
             return new HttpEndpoint(urlObj);
         }
+
+        @Override
+        public JsonElement serialize(HttpEndpoint src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.add("Url", context.serialize(src.getUrl()));
+            return jObj;
+        }
     }
 
-    public static class SimpleCDNConfigurationGson implements JsonDeserializer<SimpleCDNConfiguration> {
+    public static class SimpleCDNConfigurationGson
+        implements JsonDeserializer<SimpleCDNConfiguration>,
+        JsonSerializer<SimpleCDNConfiguration> {
 
         private static HttpEndpoint[] parseHttpEndpoints(JsonArray jHttpEndpoints, JsonDeserializationContext context) {
             var httpEndpoints = new HttpEndpoint[jHttpEndpoints.size()];
@@ -65,6 +81,38 @@ public class SimpleCDNConfiguration {
             return ans;
         }
 
+        @Override
+        public JsonElement serialize(SimpleCDNConfiguration src, Type typeOfSrc, JsonSerializationContext context) {
+            var jObj = new JsonObject();
+            jObj.addProperty("NodeId", src.getnodeId());
+            jObj.addProperty("ReplicationFactor", src.getReplicationFactor());
+            jObj.addProperty("User", src.getUser());
+            {
+                var ces = src.getClientEndpoints();
+                var jArray = new JsonArray(ces.length);
+                for (var ce : ces) {
+                    jArray.add(context.serialize(ce));
+                }
+                jObj.add("ClientEndpoints", jArray);
+            }
+            {
+                var mes = src.getManagementEndpoints();
+                var jArray = new JsonArray(mes.length);
+                for (var me : mes) {
+                    jArray.add(context.serialize(me));
+                }
+                jObj.add("ManagementEndpoints", jArray);
+            }
+            {
+                var cps = src.getCandidatePeers();
+                var jArray = new JsonArray(cps.length);
+                for (var cp : cps) {
+                    jArray.add(context.serialize(cp));
+                }
+                jObj.add("CandidatePeers", jArray);
+            }
+            return jObj;
+        }
     }
 
     // id of current node
@@ -80,7 +128,7 @@ public class SimpleCDNConfiguration {
     private HttpEndpoint[] managementEndpoints;
     // this node will look for other DataNode(s) on these endpoint
     private HttpEndpoint[] candidatePeers;
-    
+
     // liste di ip:porte di ascolto per client
     // liste di ip:porte di ascolto per altri nodi
 
@@ -161,7 +209,9 @@ public class SimpleCDNConfiguration {
     }
 
     public String toJson(boolean prettyPrinting) {
-        var gBuilder = new GsonBuilder();
+        var gBuilder = new GsonBuilder()
+            .registerTypeAdapter(SimpleCDNConfiguration.class, new SimpleCDNConfigurationGson())
+            .registerTypeAdapter(HttpEndpoint.class, new HttpEndpointGson());
         if (prettyPrinting) {
             gBuilder = gBuilder.setPrettyPrinting();
         }

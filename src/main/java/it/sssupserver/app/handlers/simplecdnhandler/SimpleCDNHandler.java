@@ -1554,6 +1554,11 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, stats);
         }
 
+        private void sendConfiguration(HttpExchange exchange) throws IOException {
+            var conf = config.toJson();
+            sendJson(exchange, conf);
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
@@ -1586,6 +1591,10 @@ public class SimpleCDNHandler implements RequestHandler {
                             else if (path.equals("stats")) {
                                 // return file statistics
                                 sendFileStatisticsWithIdentity(exchange);
+                            }
+                            else if (path.equals("configuration")) {
+                                // return file statistics
+                                sendConfiguration(exchange);
                             }
                             else {
                                 httpNotFound(exchange);
@@ -1772,10 +1781,12 @@ public class SimpleCDNHandler implements RequestHandler {
             // Compute size
             newNode.setSize(receivedFileSize);
             newNode.setFileHash(ManagedFileSystemStatus.HASH_ALGORITHM, md.digest());
-            fsStatus.addLocalFileInfo(newNode);
+            var lfi = fsStatus.addLocalFileInfo(newNode);
             // TODO: delete possible old versions
             // send ok
             httpOk(exchange, "File saved as: " + finalName);
+            // Notify new file upload to neighbours inside the topology
+            scheduleNotificationForNewFileUpload(lfi);
         }
 
         @Override
@@ -1962,6 +1973,17 @@ public class SimpleCDNHandler implements RequestHandler {
         controlThread = null;
     }
 
+    /**
+     * Schedule sent of notification for new file upload
+     * Should be called on startup and after /file PUT
+     * @param lfi
+     */
+    public void scheduleNotificationForNewFileUpload(ManagedFileSystemStatus.LocalFileInfo lfi) {
+        // TODO: notify neighbour nodes to ask them starting
+        // replication strategy
+        // TODO: request operation to thread pool
+    }
+
     // ----------------------------------------------------------------
     // Operations associated with control thread ----------------------
     // ----------------------------------------------------------------
@@ -1984,5 +2006,38 @@ public class SimpleCDNHandler implements RequestHandler {
             hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
         }
         return new String(hexChars);
+    }
+
+    private static Predicate<String> hexPatternTest;
+    static {
+        hexPatternTest = Pattern.compile(
+            "^[a-fA-F0-9]*$"
+        ).asMatchPredicate();
+    }
+    public static byte[] hexToBytes(String hex) {
+        hex = hex.toLowerCase();
+        if (hex.length() % 2 != 0 || !hexPatternTest.test(hex)) {
+            throw new IllegalArgumentException("Invalid hex string: " + hex);
+        }
+        var ans = new byte[hex.length() >> 1];
+        for (var i=0; i != ans.length; ++i) {
+            var index1 = (i << 1);
+            var index2 = index1 + 1;
+            // first byte
+            var c = hex.charAt(index1);
+            ans[i] = (byte)((
+                ('0' <= c && c <= '9') ?
+                    c - '0' :
+                    10 + (c - 'a')
+            ) << 4);
+            // second byte
+            c = hex.charAt(index2);
+            ans[i] |= (byte)(
+                ('0' <= c && c <= '9') ?
+                    c - '0' :
+                    10 + (c - 'a')
+            );
+        }
+        return ans;
     }
 }
