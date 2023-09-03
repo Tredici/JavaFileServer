@@ -38,12 +38,20 @@ import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNConfiguration.HttpE
 import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpClient.Redirect;
+import java.net.http.HttpResponse.BodyHandler;
+import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -58,10 +66,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import javax.management.RuntimeErrorException;
 
 
 public class SimpleCDNHandler implements RequestHandler {
@@ -77,6 +88,14 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // when was this node started
     private Instant startInstant;
+
+    private Duration httpConnectionTimeout = Duration.ofSeconds(30);
+    private Duration httpRequestTimeout = Duration.ofSeconds(30);
+    private HttpClient httpClient = HttpClient.newBuilder()
+        .version(java.net.http.HttpClient.Version.HTTP_1_1)
+        .followRedirects(Redirect.ALWAYS)
+        .connectTimeout(httpConnectionTimeout)
+        .build();
 
     // this class
     private static class DataNodeDescriptor {
@@ -104,6 +123,39 @@ public class SimpleCDNHandler implements RequestHandler {
         public int replication_factor = 3;
         // status of the node
         public Status status = Status.SHUTDOWN;
+
+
+        public long getId() {
+            return id;
+        }
+
+        public int getReplicationFactor() {
+            return replication_factor;
+        }
+
+        public URL[] getDataendpoints() {
+            return dataendpoints;
+        }
+
+        public URL[] getManagerendpoint() {
+            return managerendpoint;
+        }
+
+        public Status getStatus() {
+            return status;
+        }
+
+        public URL getRandomDataEndpointURL() {
+            var l = dataendpoints.length;
+            var de = dataendpoints[(int)(l*Math.random())];
+            return de;
+        }
+
+        public URL getRandomManagementEndpointURL() {
+            var l = managerendpoint.length;
+            var de = managerendpoint[(int)(l*Math.random())];
+            return de;
+        }
     }
 
     public static class DataNodeDescriptorGson implements JsonSerializer<DataNodeDescriptor> {
@@ -249,6 +301,10 @@ public class SimpleCDNHandler implements RequestHandler {
             return getFileSuppliers(path).contains(node);
         }
 
+        public DataNodeDescriptor searchDataNodeDescriptorById(long id) {
+            return datanodes.get(id);
+        }
+
         // is current node supplier of file?
         public boolean isFileSupplier(String path) {
             return isFileSupplier(SimpleCDNHandler.this.thisnode, path);
@@ -380,6 +436,95 @@ public class SimpleCDNHandler implements RequestHandler {
                 // TODO: should only log error
             }
             return false;
+        }
+    }
+
+    
+    private static Pattern eTagPattern;
+    static {
+        var hashes = FileReducerCommand.getAvailableHashAlgorithms();
+        var regex = new StringBuilder(512)
+            .append('^')
+            // timestamp
+            .append("(?<timestamp>\\d+)")
+            .append(':')
+            // size
+            .append("(?<size>\\d+)")
+            .append(':')
+            // hash algorithm
+            .append("(?<algorithm>(")
+            .append(
+
+                String.join("|", hashes)
+            )
+            .append("))")
+            .append(':')
+            // hash
+            .append(
+                "(?<hash>[0-9A-F])"
+            )
+            .append('$')
+            .toString();
+        eTagPattern = Pattern.compile(regex);
+    }
+    public class ETagParser {
+        // used to test ETag
+        private String eTag;
+
+        private Instant timestamp;
+        private long size;
+        private String hashAlgorithm;
+        private byte[] hash;
+
+        public ETagParser(String s) {
+            var m = eTagPattern.matcher(s);
+            if (!m.find()) {
+                throw new RuntimeException("No pattern (" + eTagPattern.pattern()
+                    + ") recognised in ETag: " + s);
+            }
+            eTag = s;
+            var timestamp = m.group("timestamp");
+            var size = m.group("size");
+            var algorithm = m.group("algorithm");
+            var hash = m.group("hash");
+            if (timestamp == null ||
+                size == null ||
+                algorithm == null ||
+                hash == null ) {
+                if (!m.find()) {
+                    throw new RuntimeException("No pattern (" + eTagPattern.pattern()
+                        + ") recognised in ETag: " + s);
+                }
+            }
+            this.timestamp = Instant.ofEpochMilli(Long.parseLong(timestamp));
+            this.size = Long.parseLong(size);
+            this.hashAlgorithm = algorithm;
+            this.hash = hexToBytes(hash);
+        }
+
+        public String geteTag() {
+            return eTag;
+        }
+
+        public Instant getTimestamp() {
+            return timestamp;
+        }
+
+        public long getSize() {
+            return size;
+        }
+
+        public String getHashAlgorithm() {
+            return hashAlgorithm;
+        }
+
+        public byte[] getHash() {
+            return hash;
+        }
+
+        @Override
+        public String toString() {
+            return eTag;
         }
     }
 
@@ -618,10 +763,42 @@ public class SimpleCDNHandler implements RequestHandler {
                 // associate file with Node olding its properties
                 private FileTree.Node node;
 
-                public Version(FileTree.Node node, boolean isCorrupted, boolean isTemporary) {
+                public Version(FileTree.Node node, boolean isCorrupted, boolean isTemporary, boolean isDeleted) throws Exception {
                     this.node = node;
                     this.corrupted = isCorrupted;
                     this.tmp = isTemporary;
+                    this.deleted = isDeleted;
+                    // if isDeleted should retrieve ETag from file content
+                    // if isCorrupted ignore
+                    if (isDeleted && !isCorrupted) {
+                        // retrieve
+                        var accumulator = new ArrayList<Byte>(512);
+                        var reducer = (BiFunction<List<Byte>, ByteBuffer, List<Byte>>) (List<Byte> a, ByteBuffer b) -> {
+                            while (b.hasRemaining()) {
+                                a.add(b.get());
+                            }
+                            return a;
+                        };
+                        var finalizer = (Function<List<Byte>,String>) (List<Byte> a) -> {
+                            var B = a.toArray(new Byte[0]);
+                            var b = new byte[B.length];
+                            // return first line
+                            return new String(b, StandardCharsets.UTF_8).split("\n")[0];
+                        };
+                        var firstLine = FileReducerCommand.reduce(executor, getPath(), identity, accumulator, reducer, finalizer).toString();
+                        // validate ETAG
+                        try {
+                            var eTag = new ETagParser(firstLine);
+                            // set parameters to Node object
+                            this.node.setLastModified(eTag.getTimestamp());
+                            this.node.setSize(eTag.getSize());
+                            this.node.setFileHash(eTag.getHashAlgorithm(), eTag.getHash());
+                        } catch (Exception e) {
+                            // if fail consider as corrupted
+                            isCorrupted = true;
+                        }
+                        // extract info from etag
+                    }
 
                     // add to list of versions
                     LocalFileInfo.this.versions.add(this);
@@ -762,8 +939,8 @@ public class SimpleCDNHandler implements RequestHandler {
                 }
             }
 
-            public Version addVersion(FileTree.Node node, FilenameMetadata metadata) {
-                var ans = new Version(node, metadata.isCorrupted(), metadata.isTemporary());
+            public Version addVersion(FileTree.Node node, FilenameMetadata metadata) throws Exception {
+                var ans = new Version(node, metadata.isCorrupted(), metadata.isTemporary(), metadata.isDeteleted());
                 return ans;
             }
 
@@ -917,8 +1094,24 @@ public class SimpleCDNHandler implements RequestHandler {
             }
             // Search for other file versions
             var lfi = localFiles.computeIfAbsent(searchPath.toString(), LocalFileInfo::new);
+            // check if isDeleted() and not isCorrupted()
+            var wasDeletedButNotCorrupted = metadata.isDeteleted() && !metadata.isCorrupted();
             // add new version
             var version = lfi.addVersion(node, metadata);
+            if (wasDeletedButNotCorrupted && version.isCorrupted()) {
+                // corrupted!
+                metadata = version.getMetadata();
+                // new file name
+                var finalName = metadata.toString();
+                var dstPath = dirname.createSubfile(finalName);
+                var f = FutureMoveCommand.move(executor, filePath, dstPath, identity);
+                // wait for move completion
+                f.get();
+                // new filePath
+                filePath = dstPath;
+                // update node
+                node.rename(dstPath);
+            }
             return lfi;
         }
 
@@ -1042,6 +1235,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // calculate file hashes
             calculateFileHashes();
             // move (if necessary) and extract metadata from regular files
+            // handle specially @deleted files
             handleRegularFileInfo();
 
             // put snapshot inside a mutable structure
@@ -1969,7 +2163,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var newNode = fsStatus.addRegularFileNode(finalName);
             // Compute size
             newNode.setSize(receivedFileSize);
-            newNode.setFileHash(ManagedFileSystemStatus.HASH_ALGORITHM, md.digest());
+            newNode.setFileHash(md.getAlgorithm(), md.digest());
             var lfi = fsStatus.addLocalFileInfo(newNode);
             // TODO: delete possible old versions
             // send 201 CREATED
@@ -2215,15 +2409,171 @@ public class SimpleCDNHandler implements RequestHandler {
         return null;
     }
 
+    public URL getRemoteManagementEndpointByNodeId(long nodeId) {
+        // get reference to remote node
+        var remoteNode = topology.searchDataNodeDescriptorById(nodeId);
+        if (remoteNode == null) {
+            throw new RuntimeException("No node with id " + nodeId + " found");
+        }
+        // get management endpoint 
+        var mep = remoteNode.getRandomManagementEndpointURL();
+        return mep;
+    }
+
     /**
      * send a GET /file/path/to/file request to a remote node to download it
      * and store locally
+     * @throws URISyntaxException
+     * @throws InterruptedException
+     * @throws IOException
      */
-    private void downloadFileFromNode(String searchPath, long nodeId) {
+    private boolean downloadFileFromDatanode(String searchPath, long nodeId) throws URISyntaxException, IOException, InterruptedException {
+        var filePath = new it.sssupserver.app.base.Path(searchPath);
+        var dirname = filePath.getDirname();
+        if (nodeId == thisnode.id) {
+            throw new RuntimeException("Cannot download from itself");
+        }
+        // get management endpoint 
+        var me = getRemoteManagementEndpointByNodeId(nodeId);
+        // build request URI
+        var rUri = me.toURI().resolve(FileManagementHttpHandler.PATH).resolve(searchPath);
         // check if local version exists
         var version = fsStatus.getLastSuppliableVersion(searchPath);
-        //
-        // TODO
+        // Build request
+        var reqB = HttpRequest.newBuilder()
+            .GET()
+            .uri(rUri);
+        if (version != null) {
+            reqB = reqB.header("ETag", version.generateHttpETagHeader());
+        }
+        var req = reqB.build();
+        var res = httpClient.send(req, BodyHandlers.ofInputStream());
+        var is = res.body();
+        switch (res.statusCode()) {
+            case 200:
+                // store file locally
+                {
+                    ETagParser receivedETag;
+                    try {
+                        // check received ETag
+                        var receivedETagHeader = res.headers().firstValue("ETag").get();
+                        receivedETag = new ETagParser(receivedETagHeader);
+                        var metadata = new FilenameMetadata(filePath.getBasename(),
+                            receivedETag.getTimestamp(), false, true, false);
+                        // check coerence with file dimension
+                        var contentLength = Long.parseLong(res.headers().firstValue("Content-Length").get());
+                        if (contentLength != receivedETag.getSize()) {
+                            throw new RuntimeException("ETag file size is " + receivedETag.getSize()
+                                + " but Content-Lenght is " + contentLength);
+                        }
+                        // is file hash known?
+                        var ha = receivedETag.getHashAlgorithm();
+                        if (!Arrays.stream(FileReducerCommand.getAvailableHashAlgorithms())
+                            .anyMatch(ha::equals)) {
+                            throw new RuntimeException("Bad ETag (unknown hash): " + receivedETag);
+                        }
+                        // create hasher for content check
+                        var md = MessageDigest.getInstance(ha);
+                        // path to save temporary file during download
+                        var temporaryFilename = dirname.createSubfile(metadata.toString());
+                        // create directory
+                        FutureMkdirCommand.create(executor, dirname, identity).get();
+                        // download file piece by piece
+                        {
+                            var bfsz = BufferManager.getBufferSize();
+                            var tmp = new byte[bfsz];
+                            BufferWrapper bufWrapper;
+                            int len;
+                            java.nio.ByteBuffer buf;
+                            long receivedFileSize = 0;
+
+                            bufWrapper = BufferManager.getBuffer();
+                            buf = bufWrapper.get();
+                            // read until data availables or buffer filled
+                            while (contentLength > 0 && buf.hasRemaining()) {
+                                len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
+                                if (len == -1) {
+                                    break;
+                                }
+                                contentLength -= len;
+                                receivedFileSize += len;
+                                md.update(tmp, 0, len);
+                                buf.put(tmp, 0, len);
+                            }
+                            buf.flip();
+                            // create file locally and start storing it
+                            QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
+                            // store file piece by piece
+                            while (contentLength > 0) {
+                                // take a new buffer
+                                bufWrapper = BufferManager.getBuffer();
+                                buf = bufWrapper.get();
+                                // fill this buffer
+                                while (contentLength > 0 && buf.hasRemaining()) {
+                                    len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
+                                    if (len == -1) {
+                                        break;
+                                    }
+                                    contentLength -= len;
+                                    receivedFileSize += len;
+                                    md.update(tmp, 0, len);
+                                    buf.put(tmp, 0, len);
+                                }
+                                buf.flip();
+                                // append new
+                                queable.enqueue(bufWrapper);
+                            }
+                            // wait for completion
+                            var success = queable.getFuture().get();
+                            if (!success) {
+                                // delete temporary file
+                                FutureDeleteCommand.delete(executor, temporaryFilename, identity);
+                                throw new RuntimeException("Error while creating file: " + temporaryFilename);
+                            }
+                            // rename file with final name - i.e. remove "@tmp"
+                            metadata.setTemporary(false);
+                            var finalName = dirname.createSubfile(metadata.toString());
+                            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity);
+                            // add save new reference to file as available
+                            var newNode = fsStatus.addRegularFileNode(finalName);
+                            // Compute size
+                            newNode.setSize(receivedFileSize);
+                            newNode.setFileHash(md.getAlgorithm(), md.digest());
+                            var lfi = fsStatus.addLocalFileInfo(newNode);
+                            is.close();
+                            return true;
+                        }
+                    } catch (Exception e) {
+                        is.close();
+                    }
+                }
+                break;
+            case 410:
+                // handle deleted file
+                {
+                    ;
+                }
+                break;
+            default:
+                break;
+        }
+        return false;
+    }
+
+    private void downloadLocalStorageInfoWithIdentityFromRemoteDatanode(long nodeId) throws URISyntaxException, IOException, InterruptedException {
+        var me = getRemoteManagementEndpointByNodeId(nodeId);
+        // request uri
+        var rUri = me.toURI().resolve(ApiManagementHttpHandler.PATH).resolve("suppliables");
+        // build http request
+        var req = HttpRequest.newBuilder(rUri)
+            .GET()
+            .timeout(httpRequestTimeout)
+            .build();
+        var res = httpClient.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (res.statusCode() != 200) {
+            // bad result
+            return;
+        }
     }
 
     // Code source:
