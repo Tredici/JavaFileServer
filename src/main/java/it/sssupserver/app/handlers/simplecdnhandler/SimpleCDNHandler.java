@@ -72,7 +72,7 @@ import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import javax.management.RuntimeErrorException;
+import static it.sssupserver.app.handlers.httphandler.HttpResponseHelpers.*;
 
 
 public class SimpleCDNHandler implements RequestHandler {
@@ -96,80 +96,6 @@ public class SimpleCDNHandler implements RequestHandler {
         .followRedirects(Redirect.ALWAYS)
         .connectTimeout(httpConnectionTimeout)
         .build();
-
-    // this class
-    private static class DataNodeDescriptor {
-        // a DataNote can traverse all these status
-        public enum Status {
-            // node not working
-            SHUTDOWN,
-            // normal running status, traversed in this order
-            STARTING,
-            SYNCING,
-            RUNNING,
-            STOPPING,
-            // error status
-            MAYBE_FAILED,
-            FAILED
-        }
-        // id identifing the node
-        public long id;
-        // list of: http://myendpoint:port
-        // used to find http endpoints to download data (as client)
-        public URL[] dataendpoints;
-        // used to find http endpoint to operate consistency protocol
-        public URL[] managerendpoint;
-        // how many replicas for each file? Default: 3
-        public int replication_factor = 3;
-        // status of the node
-        public Status status = Status.SHUTDOWN;
-
-
-        public long getId() {
-            return id;
-        }
-
-        public int getReplicationFactor() {
-            return replication_factor;
-        }
-
-        public URL[] getDataendpoints() {
-            return dataendpoints;
-        }
-
-        public URL[] getManagerendpoint() {
-            return managerendpoint;
-        }
-
-        public Status getStatus() {
-            return status;
-        }
-
-        public URL getRandomDataEndpointURL() {
-            var l = dataendpoints.length;
-            var de = dataendpoints[(int)(l*Math.random())];
-            return de;
-        }
-
-        public URL getRandomManagementEndpointURL() {
-            var l = managerendpoint.length;
-            var de = managerendpoint[(int)(l*Math.random())];
-            return de;
-        }
-    }
-
-    public static class DataNodeDescriptorGson implements JsonSerializer<DataNodeDescriptor> {
-        @Override
-        public JsonElement serialize(DataNodeDescriptor src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.add("Id", new JsonPrimitive(src.id));
-            jObj.add("ReplicationFactor", new JsonPrimitive(src.replication_factor));
-            jObj.add("DataEndpoints", context.serialize(src.dataendpoints));
-            jObj.add("ManagerEndpoint", context.serialize(src.managerendpoint));
-            jObj.addProperty("Status", src.status.toString());
-            return jObj;
-        }
-    }
 
     // hold informations about current instance
     DataNodeDescriptor thisnode;
@@ -1650,114 +1576,6 @@ public class SimpleCDNHandler implements RequestHandler {
         var gson = gBuilder.create();
         var json = gson.toJson(obj);
         return json;
-    }
-
-    private void httpOk(HttpExchange exchange, String error) {
-        try {
-            // 200 OK
-            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/200
-            exchange.sendResponseHeaders(200, 0);
-            if (error != null && !error.isBlank()) {
-                var os = exchange.getResponseBody();
-                os.write(error.getBytes(StandardCharsets.UTF_8));
-                os.flush();;
-            } else {
-                exchange.getResponseBody().flush();
-            }
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    /**
-     * 201 Created
-     *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/201
-     */
-    private void httpCreated(HttpExchange exchange, String error) {
-        try {
-            exchange.sendResponseHeaders(201, 0);
-            if (error != null && !error.isBlank()) {
-                var os = exchange.getResponseBody();
-                os.write(error.getBytes(StandardCharsets.UTF_8));
-                os.flush();;
-            } else {
-                exchange.getResponseBody().flush();
-            }
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    /**
-     * 304 Not Modified
-     *  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/304
-     */
-    private void httpNotModified(HttpExchange exchange) {
-        try {
-            exchange.sendResponseHeaders(304, 0);
-            exchange.getResponseBody().flush();
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    private void httpBadRequest(HttpExchange exchange, String error) {
-        try {
-            // 400 Bad request
-            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
-            exchange.sendResponseHeaders(400, 0);
-            if (error != null && !error.isBlank()) {
-                var os = exchange.getResponseBody();
-                os.write(error.getBytes(StandardCharsets.UTF_8));
-                os.flush();;
-            } else {
-                exchange.getResponseBody().flush();
-            }
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    private void httpMethodNotAllowed(HttpExchange exchange) {
-        try {
-            // 405 Method Not Allowed
-            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405
-            exchange.sendResponseHeaders(405, 0);
-            exchange.getResponseBody().flush();
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    private void httpNotFound(HttpExchange exchange) {
-        httpNotFound(exchange, null);
-    }
-
-    private void httpGone(HttpExchange exchange) {
-        try {
-            // 410 Gone
-            //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/410
-            exchange.sendResponseHeaders(410, 0);
-            exchange.getResponseBody().flush();
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    private void httpNotFound(HttpExchange exchange, String error) {
-        try {
-            exchange.sendResponseHeaders(404, 0);
-            if (error != null && !error.isBlank()) {
-                var os = exchange.getResponseBody();
-                os.write(error.getBytes(StandardCharsets.UTF_8));
-                os.flush();;
-            } else {
-                exchange.getResponseBody().flush();
-            }
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-    }
-
-    private void httpInternalServerError(HttpExchange exchange) {
-        try {
-            exchange.sendResponseHeaders(500, 0);
-            exchange.getResponseBody().flush();
-            exchange.close();
-        } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
