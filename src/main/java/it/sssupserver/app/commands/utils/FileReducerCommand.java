@@ -3,6 +3,7 @@ package it.sssupserver.app.commands.utils;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.function.BiFunction;
@@ -28,6 +29,16 @@ public class FileReducerCommand<T, U, V> extends SchedulableReadCommand {
     public static final String MD5     = "MD5";
     public static final String SHA_1   = "SHA-1";
     public static final String SHA_256 = "SHA-256";
+
+    private static final String[] availableHashAlgorithms = new String[]{
+        MD5,
+        SHA_1,
+        SHA_256
+    };
+
+    public static String[] getAvailableHashAlgorithms() {
+        return Arrays.copyOf(availableHashAlgorithms, availableHashAlgorithms.length);
+    }
 
     /**
      * These 3 members are used to perform reduction on file
