@@ -366,20 +366,6 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
-    
-    private class NodeGson implements JsonSerializer<Node> {
-        @Override
-        public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.addProperty("Path", src.getPath().toString());
-            jObj.addProperty("Size", src.getSize());
-            jObj.addProperty("HashAlgorithm", src.getHashAlgorithm());
-            jObj.addProperty("Hash", bytesToHex(src.getFileHash()));
-            return jObj;
-        }
-    }
-
-
     /**
      * This class maintains a view of the files
      * managed by this DataNode.
@@ -1046,7 +1032,7 @@ public class SimpleCDNHandler implements RequestHandler {
      * all all statistics regarding client operations affecting
      * this node
      */
-    private class StatsCollector {
+    public class StatsCollector {
 
         // per file stats
         public class FileStats {
@@ -1126,44 +1112,6 @@ public class SimpleCDNHandler implements RequestHandler {
     // this object is mantained alive for all the Handler lifespan
     private StatsCollector clientStatsCollector = new StatsCollector();
 
-    public static class FileStatsGson implements JsonSerializer<StatsCollector.FileStats> {
-        @Override
-        public JsonElement serialize(StatsCollector.FileStats src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.addProperty("Path", src.getPath());
-            jObj.addProperty("Supplied", src.getSupplied());
-            jObj.addProperty("Redirects", src.getRedirects());
-            jObj.addProperty("Errors", src.getErrors());
-            return jObj;
-        }
-    }
-
-    public static class StatsCollectorGson implements JsonSerializer<StatsCollector> {
-        @Override
-        public JsonElement serialize(StatsCollector src, Type typeOfSrc, JsonSerializationContext context) {
-            var stats = src.getFileStats();
-            return context.serialize(stats);
-        }
-    }
-
-    public class FileInfoWithIdentityGson implements JsonSerializer<FileInfoWithIdentityGson> {
-        private DataNodeDescriptor identity;
-        private FileTree.Node[] nodes;
-
-        public FileInfoWithIdentityGson(DataNodeDescriptor identity, FileTree.Node[] nodes) {
-            this.identity = identity;
-            this.nodes = nodes;
-        }
-
-        @Override
-        public JsonElement serialize(FileInfoWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.add("Identity", context.serialize(identity));
-            jObj.add("LocalFiles", context.serialize(nodes));
-            return jObj;
-        }
-    }
-
     private String regularFilesInfoWithMeToJson(boolean prettyPrinting) {
         var obj = new FileInfoWithIdentityGson(thisnode, fsStatus.getAllRegularFileNodes());
         var gBuilder = new GsonBuilder()
@@ -1176,24 +1124,6 @@ public class SimpleCDNHandler implements RequestHandler {
         var gson = gBuilder.create();
         var json = gson.toJson(obj);
         return json;
-    }
-
-    public class TopologyWithIdentityGson implements JsonSerializer<TopologyWithIdentityGson> {
-        private DataNodeDescriptor identity;
-        private DataNodeDescriptor[] snapshot;
-
-        public TopologyWithIdentityGson(DataNodeDescriptor identity, DataNodeDescriptor[] snapshot) {
-            this.identity = identity;
-            this.snapshot = snapshot;
-        }
-
-        @Override
-        public JsonElement serialize(TopologyWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.add("Identity", context.serialize(identity));
-            jObj.add("Topology", context.serialize(snapshot));
-            return jObj;
-        }
     }
 
     private String topologyWithMeToJson(boolean prettyPrinting) {
@@ -1209,24 +1139,6 @@ public class SimpleCDNHandler implements RequestHandler {
         return json;
     }
 
-    public class SuppliableFilesWithIdentityGson implements JsonSerializer<SuppliableFilesWithIdentityGson> {
-        private DataNodeDescriptor identity;
-        private ManagedFileSystemStatus.LocalFileInfo[] localFileInfos;
-
-        public SuppliableFilesWithIdentityGson(DataNodeDescriptor identity, ManagedFileSystemStatus.LocalFileInfo[] localFileInfos) {
-            this.identity = identity;
-            this.localFileInfos = localFileInfos;
-        }
-
-        @Override
-        public JsonElement serialize(SuppliableFilesWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.add("Identity", context.serialize(identity));
-            jObj.add("SuppliableFiles", context.serialize(localFileInfos));
-            return jObj;
-        }
-    }
-
     private String suppliableFilesWithIdentity(boolean prettyPrinting, boolean detailed) {
         var obj = new SuppliableFilesWithIdentityGson(thisnode, fsStatus.getSuppliableFiles());
         var gBuilder = new GsonBuilder()
@@ -1240,24 +1152,6 @@ public class SimpleCDNHandler implements RequestHandler {
         var json = gson.toJson(obj);
         return json;
 
-    }
-
-    public class StatisticsWithIdentityGson implements JsonSerializer<StatisticsWithIdentityGson> {
-        private DataNodeDescriptor identity;
-        private StatsCollector.FileStats[] statistics;
-
-        public StatisticsWithIdentityGson(DataNodeDescriptor identity, StatsCollector.FileStats[] statistics) {
-            this.identity = identity;
-            this.statistics = statistics;
-        }
-
-        @Override
-        public JsonElement serialize(StatisticsWithIdentityGson src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.add("Identity", context.serialize(identity));
-            jObj.add("Statistics", context.serialize(statistics));
-            return jObj;
-        }
     }
 
     public String statisticsWithIdentity(boolean prettyPrinting) {
