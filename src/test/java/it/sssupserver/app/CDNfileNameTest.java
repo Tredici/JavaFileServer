@@ -7,26 +7,28 @@ import org.junit.Test;
 
 import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler;
 
+import static it.sssupserver.app.handlers.simplecdnhandler.FilenameCheckers.*;
+
 public class CDNfileNameTest {
 
     @Test
     public void preventEmptyName() {
         //assertFalse(SimpleCDNHandler.isValidPathName("/"));
-        assertFalse(SimpleCDNHandler.isValidPathName(""));
+        assertFalse(isValidPathName(""));
     }
 
     @Test
     public void goodNames() {
-        assertTrue(SimpleCDNHandler.isValidPathName("a/b/c.html"));
-        assertTrue(SimpleCDNHandler.isValidPathName("a.html"));
+        assertTrue(isValidPathName("a/b/c.html"));
+        assertTrue(isValidPathName("a.html"));
     }
 
     @Test
     public void badNames() {
-        assertFalse(SimpleCDNHandler.isValidPathName("a/b/.html"));
-        assertFalse(SimpleCDNHandler.isValidPathName("a/b/.html"));
-        assertFalse(SimpleCDNHandler.isValidPathName("a/b/c..html"));
-        assertFalse(SimpleCDNHandler.isValidPathName("a/b/c."));
-        assertFalse(SimpleCDNHandler.isValidPathName("."));
+        assertFalse(isValidPathName("a/b/.html"));
+        assertFalse(isValidPathName("a/b/.html"));
+        assertFalse(isValidPathName("a/b/c..html"));
+        assertFalse(isValidPathName("a/b/c."));
+        assertFalse(isValidPathName("."));
     }
 }

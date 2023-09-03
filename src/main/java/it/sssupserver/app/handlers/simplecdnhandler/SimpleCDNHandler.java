@@ -73,7 +73,8 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static it.sssupserver.app.handlers.httphandler.HttpResponseHelpers.*;
-
+import static it.sssupserver.app.handlers.simplecdnhandler.FilenameCheckers.*;
+import static it.sssupserver.app.base.HexUtils.*;
 
 public class SimpleCDNHandler implements RequestHandler {
 
@@ -366,147 +367,6 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     
-    private static Pattern eTagPattern;
-    static {
-        var hashes = FileReducerCommand.getAvailableHashAlgorithms();
-        var regex = new StringBuilder(512)
-            .append('^')
-            // timestamp
-            .append("(?<timestamp>\\d+)")
-            .append(':')
-            // size
-            .append("(?<size>\\d+)")
-            .append(':')
-            // hash algorithm
-            .append("(?<algorithm>(")
-            .append(
-
-                String.join("|", hashes)
-            )
-            .append("))")
-            .append(':')
-            // hash
-            .append(
-                "(?<hash>[0-9A-F])"
-            )
-            .append('$')
-            .toString();
-        eTagPattern = Pattern.compile(regex);
-    }
-    public class ETagParser {
-        // used to test ETag
-        private String eTag;
-
-        private Instant timestamp;
-        private long size;
-        private String hashAlgorithm;
-        private byte[] hash;
-
-        public ETagParser(String s) {
-            var m = eTagPattern.matcher(s);
-            if (!m.find()) {
-                throw new RuntimeException("No pattern (" + eTagPattern.pattern()
-                    + ") recognised in ETag: " + s);
-            }
-            eTag = s;
-            var timestamp = m.group("timestamp");
-            var size = m.group("size");
-            var algorithm = m.group("algorithm");
-            var hash = m.group("hash");
-            if (timestamp == null ||
-                size == null ||
-                algorithm == null ||
-                hash == null ) {
-                if (!m.find()) {
-                    throw new RuntimeException("No pattern (" + eTagPattern.pattern()
-                        + ") recognised in ETag: " + s);
-                }
-            }
-            this.timestamp = Instant.ofEpochMilli(Long.parseLong(timestamp));
-            this.size = Long.parseLong(size);
-            this.hashAlgorithm = algorithm;
-            this.hash = hexToBytes(hash);
-        }
-
-        public String geteTag() {
-            return eTag;
-        }
-
-        public Instant getTimestamp() {
-            return timestamp;
-        }
-
-        public long getSize() {
-            return size;
-        }
-
-        public String getHashAlgorithm() {
-            return hashAlgorithm;
-        }
-
-        public byte[] getHash() {
-            return hash;
-        }
-
-        @Override
-        public String toString() {
-            return eTag;
-        }
-    }
-
-    // initialize parameters used to check validity of file path(s)
-    private static Predicate<String> directoryNameTest;
-    private static Predicate<String> regularFileNameTest;
-    static {
-        directoryNameTest = Pattern.compile(
-            "^(_|-|\\+|\\w)+$",
-            Pattern.CASE_INSENSITIVE
-        ).asMatchPredicate();
-        regularFileNameTest = Pattern.compile(
-            "^(_|-|\\+|\\w)+(\\.(_|-|\\+|\\w)+)+$",
-            Pattern.CASE_INSENSITIVE
-        ).asMatchPredicate();
-    }
-
-    // pattern used to insert metadata informations inside file names
-    private static Pattern fileMetadataPattern;
-    static {
-        fileMetadataPattern = Pattern.compile("^(?<simpleName>[^@]*)(@(?<timestamp>\\d+))?(?<temporary>@tmp)?(?<deleted>@deleted)?(?<corrupted>@corrupted)?$");
-    }
-
-    // directories should match "^(_|-|\+|\w)+$"
-    // Easy: they must NOT contains any dot
-    private static boolean isValidDirectoryName(String dirname) {
-        return dirname.length() > 0 && directoryNameTest.test(dirname);
-    }
-
-    // directories should match "^(_|-|\+|\w)+(\.(_|-|\+|\w)+)+$"
-    private static boolean isValidRegularFileName(String filename) {
-        return filename.length() > 0 && regularFileNameTest.test(filename);
-    }
-
-    public static boolean isValidPathName(it.sssupserver.app.base.Path path) {
-        if (path.isEmpty()) {
-            return false;
-        }
-        var isDir = path.isDir();
-        var components = path.getPath();
-        var length = components.length;
-        var lastName = components[length-1];
-        for (int i=0; i<length-1; ++i) {
-            if (!isValidDirectoryName(components[i])) {
-                return false;
-            }
-        }
-        return isDir ? isValidDirectoryName(lastName)
-            : isValidRegularFileName(lastName);
-    }
-
-    public static boolean isValidPathName(String path) {
-        return isValidPathName(new it.sssupserver.app.base.Path(path));
-    }
-
-
     private class NodeGson implements JsonSerializer<Node> {
         @Override
         public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
@@ -519,127 +379,6 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
-    // Helper class used to parse true path names in order to
-    // extract
-    private static class FilenameMetadata {
-        // Filename structure:
-        //  "{regular file name character}
-        //   (@\d: timestamp)?
-        //   (@corrupted)?
-        //   (@tmp)?"
-
-        private String simpleName;
-        private Instant timestamp;
-        private boolean corrupted;
-        private boolean temporary;
-        private boolean deleted;
-
-        public FilenameMetadata(String filename) {
-            // regex and parse
-            var m = fileMetadataPattern.matcher(filename);
-            if (!m.find()) {
-                throw new RuntimeException("No pattern (" + fileMetadataPattern.pattern()
-                    + ") recognised in filename: " + filename);
-            }
-            simpleName = m.group("simpleName");
-            var time = m.group("timestamp");
-            var corr = m.group("corrupted");
-            var tmp = m.group("temporary");
-            var deleted = m.group("deleted");
-            if (time != null) {
-                this.timestamp = Instant.ofEpochMilli(Long.parseLong(time));
-            }
-            if (corr != null) {
-                this.corrupted = true;
-            }
-            if (tmp != null) {
-                this.temporary = true;
-            }
-            if (deleted != null) {
-                this.deleted = true;
-            }
-        }
-
-        public FilenameMetadata(
-            String simpleName,
-            Instant timestamp,
-            boolean corrupted,
-            boolean temporary,
-            boolean deleted
-        ) {
-            if (!isValidRegularFileName(simpleName)) {
-                throw new RuntimeException("Invalid filename: " + simpleName);
-            }
-            this.simpleName = simpleName;
-            this.timestamp = timestamp;
-            this.corrupted = corrupted;
-            this.temporary = temporary;
-            this.deleted = deleted;
-        }
-
-        /**
-         * Return string before first '@'
-         * @return
-         */
-        public String getSimpleName() {
-            return simpleName;
-        }
-
-        public void setTimestamp(Instant timestamp) {
-            this.timestamp = timestamp;
-        }
-
-        public Instant getTimestamp() {
-            return timestamp;
-        }
-
-        public void setCorrupted(boolean corrupted) {
-            this.corrupted = corrupted;
-        }
-
-        public boolean isCorrupted() {
-            return corrupted;
-        }
-
-        public void setTemporary(boolean temporary) {
-            this.temporary = temporary;
-        }
-
-        public boolean isTemporary() {
-            return temporary;
-        }
-
-        public void setDeteleted(boolean deleted) {
-            this.deleted = deleted;
-        }
-
-        public boolean isDeteleted() {
-            return deleted;
-        }
-
-        // used to test if any data was extracted from the file name
-        public boolean holdMetadata() {
-            return timestamp != null || corrupted || temporary || deleted;
-        }
-
-        public String toString() {
-            var sb = new StringBuffer();
-            sb.append(simpleName);
-            if (timestamp != null) {
-                sb.append('@').append(timestamp.toEpochMilli());
-            }
-            if (isTemporary()) {
-                sb.append("@tmp");
-            }
-            if (isDeteleted()) {
-                sb.append("@deleted");
-            }
-            if (isCorrupted()) {
-                sb.append("@corrupted");
-            }
-            return sb.toString();
-        }
-    }
 
     /**
      * This class maintains a view of the files
@@ -647,7 +386,7 @@ public class SimpleCDNHandler implements RequestHandler {
      * It should be re-initialized every time this
      * handler is started.
      */
-    private class ManagedFileSystemStatus {
+    public class ManagedFileSystemStatus {
         // hash algorithm chosen to compare files owned by replicas
         public static final String HASH_ALGORITHM = FileReducerCommand.MD5;
 
@@ -1190,48 +929,6 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
-    /**
-     * Gson serializer for LocalFileInfo.Version
-     * When serializing, present only the newest version,
-     * others are only for internal usage
-     */
-    public class LocalFileVersionGson implements JsonSerializer<ManagedFileSystemStatus.LocalFileInfo> {
-        private boolean detailed = false;
-
-        public LocalFileVersionGson() {
-        }
-
-        public LocalFileVersionGson(boolean printDetailed) {
-            detailed = printDetailed;
-        }
-
-        @Override
-        public JsonElement serialize(ManagedFileSystemStatus.LocalFileInfo src, Type typeOfSrc, JsonSerializationContext context) {
-            var jObj = new JsonObject();
-            jObj.addProperty("SearchPath", src.getSearchPath());
-            if (!detailed) {
-                var v = src.getLastSuppliableVersion();
-                jObj.addProperty("Size", v.getSize());
-                jObj.addProperty("HashAlgorithm", v.getHashAlgotrithm());
-                jObj.addProperty("Hash", bytesToHex(v.getFileHash()));
-                jObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
-            } else {
-                var versions = src.getAllVersions();
-                var jArray = new JsonArray(versions.length);
-                for (var v : versions) {
-                    var vObj = new JsonObject();
-                    vObj.addProperty("Size", v.getSize());
-                    vObj.addProperty("HashAlgorithm", v.getHashAlgotrithm());
-                    vObj.addProperty("Hash", bytesToHex(v.getFileHash()));
-                    vObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
-                    vObj.addProperty("RealPath", v.getPath().toString());
-                    jArray.add(vObj);
-                }
-                jObj.add("Versions", jArray);
-            }
-            return jObj;
-        }
-    }
 
     private ManagedFileSystemStatus fsStatus;
 
@@ -2392,51 +2089,5 @@ public class SimpleCDNHandler implements RequestHandler {
             // bad result
             return;
         }
-    }
-
-    // Code source:
-    //  https://stackoverflow.com/questions/9655181/java-convert-a-byte-array-to-a-hex-string
-    private static final char[] HEX_ARRAY = "0123456789ABCDEF".toLowerCase().toCharArray();
-    public static String bytesToHex(byte[] bytes) {
-        char[] hexChars = new char[bytes.length * 2];
-        for (int j = 0; j < bytes.length; j++) {
-            int v = bytes[j] & 0xFF;
-            hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-            hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
-        }
-        return new String(hexChars);
-    }
-
-    private static Predicate<String> hexPatternTest;
-    static {
-        hexPatternTest = Pattern.compile(
-            "^[a-fA-F0-9]*$"
-        ).asMatchPredicate();
-    }
-    public static byte[] hexToBytes(String hex) {
-        hex = hex.toLowerCase();
-        if (hex.length() % 2 != 0 || !hexPatternTest.test(hex)) {
-            throw new IllegalArgumentException("Invalid hex string: " + hex);
-        }
-        var ans = new byte[hex.length() >> 1];
-        for (var i=0; i != ans.length; ++i) {
-            var index1 = (i << 1);
-            var index2 = index1 + 1;
-            // first byte
-            var c = hex.charAt(index1);
-            ans[i] = (byte)((
-                ('0' <= c && c <= '9') ?
-                    c - '0' :
-                    10 + (c - 'a')
-            ) << 4);
-            // second byte
-            c = hex.charAt(index2);
-            ans[i] |= (byte)(
-                ('0' <= c && c <= '9') ?
-                    c - '0' :
-                    10 + (c - 'a')
-            );
-        }
-        return ans;
     }
 }
