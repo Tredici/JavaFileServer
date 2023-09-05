@@ -3,6 +3,8 @@ package it.sssupserver.app.handlers.simplecdnhandler;
 import java.net.URL;
 import java.time.Instant;
 
+import com.google.gson.GsonBuilder;
+
 // this class
 public class DataNodeDescriptor {
     // a DataNote can traverse all these status
@@ -37,10 +39,63 @@ public class DataNodeDescriptor {
      */
     private Instant startInstant;
 
+    /**
+     * Timestamp updated by a node and sent in JSON responses
+     * to evidence current node status changes. Important in
+     * synchronization protocols.
+     */
+    private Instant lastStatusChange;
+
+    public Instant getLastStatusChange() {
+        return lastStatusChange;
+    }
+    public void setLastStatusChange(Instant lastStatusChangeInstant) {
+        this.lastStatusChange = lastStatusChangeInstant;
+    }
+
+    /**
+     * Last time this node was considered in an interaction
+     * with the local node. Used in keepalive protocol.
+     * Should not be serialized, it is used only locally.
+     */
+    private Instant keepAlive;
+    /**
+     * Last time topology seen by this node was updated.
+     * Used in topology reconstuction protocols.
+     * Updated only but the node itself. Sent via Json responses.
+     */
+    private Instant lastTopologyUpdate;
+    /**
+     * Last time files held by this node were modified/updated.
+     * Used in file resynchronition protocol. Sent via Json responses.
+     */
+    private Instant lastFileUpdate;
+
+    public Instant getLastFileUpdate() {
+        return lastFileUpdate;
+    }
+    public void setLastFileUpdate(Instant lastFileUpdate) {
+        this.lastFileUpdate = lastFileUpdate;
+    }
+    public Instant getLastTopologyUpdate() {
+        return lastTopologyUpdate;
+    }
+    public void setLastTopologyUpdate(Instant lastTopologyUpdate) {
+        this.lastTopologyUpdate = lastTopologyUpdate;
+    }
+    public Instant getKeepAlive() {
+        return keepAlive;
+    }
+    public void setKeepAlive(Instant keepAlive) {
+        this.keepAlive = keepAlive;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this.getClass() == o.getClass()) {
-            return this.getId() == ((DataNodeDescriptor)o).getId();
+            var on = (DataNodeDescriptor)o;
+            return this.getId() == on.getId()
+                && this.getStartInstant().equals(on.getStartInstant());
         } else {
             return false;
         }
@@ -104,5 +159,14 @@ public class DataNodeDescriptor {
         var l = managerendpoint.length;
         var de = managerendpoint[(int)(l*Math.random())];
         return de;
+    }
+
+    public static DataNodeDescriptor fromJson(String json) {
+        DataNodeDescriptor ans;
+        var gson = new GsonBuilder()
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptor())
+            .create();
+        ans = gson.fromJson(json, DataNodeDescriptor.class);
+        return ans;
     }
 }
