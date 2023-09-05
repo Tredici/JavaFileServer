@@ -88,6 +88,8 @@ public class RequestHandlerFactory {
                                 if (pairs.anyMatch(p -> p.length != 2)) {
                                     throw new Exception("Bad extra parameter: " + values);
                                 }
+                                pairs = Arrays.stream(values.split(";"))
+                                    .map(s -> s.split("="));
                                 ans.extras = pairs.map(p -> new
                                     SimpleImmutableEntry<String, String>(p[0], p[1]))
                                     .collect(Collectors.toList())
