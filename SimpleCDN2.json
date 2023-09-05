@@ -4,17 +4,17 @@
     "NodeId": 1,
     "ClientEndpoints": [
         {
-            "Url": "http://0.0.0.0:8888"
+            "Url": "http://0.0.0.0:7777"
         }
     ],
     "ManagementEndpoints": [
         {
-            "Url": "http://0.0.0.0:8080"
+            "Url": "http://0.0.0.0:7070"
         }
     ],
     "CandidatePeers": [
         {
-            "Url": "http://127.0.0.1:7070"
+            "Url": "http://127.0.0.1:6060"
         }
     ]
 }
