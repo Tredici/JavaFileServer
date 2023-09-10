@@ -52,6 +52,10 @@ public class HttpResponseHelpers {
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
+    public static void httpBadRequest(HttpExchange exchange) {
+        httpBadRequest(exchange, null);
+    }
+
     public static void httpBadRequest(HttpExchange exchange, String error) {
         try {
             // 400 Bad request
