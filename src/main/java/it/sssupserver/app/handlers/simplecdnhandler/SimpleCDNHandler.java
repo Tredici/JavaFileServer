@@ -42,6 +42,7 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpResponse.BodyHandler;
 import java.net.http.HttpResponse.BodyHandlers;
@@ -65,7 +66,10 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -92,14 +96,18 @@ public class SimpleCDNHandler implements RequestHandler {
 
     private Duration httpConnectionTimeout = Duration.ofSeconds(30);
     private Duration httpRequestTimeout = Duration.ofSeconds(30);
-    private HttpClient httpClient = HttpClient.newBuilder()
-        .version(java.net.http.HttpClient.Version.HTTP_1_1)
-        .followRedirects(Redirect.ALWAYS)
-        .connectTimeout(httpConnectionTimeout)
-        .build();
+    private HttpClient httpClient;
 
     // hold informations about current instance
     DataNodeDescriptor thisnode;
+
+    public SimpleCDNConfiguration getConfig() {
+        return config;
+    }
+
+    public HttpClient getHttpClient() {
+        return httpClient;
+    }
 
     private String thisnodeAsJson(boolean prettyPrinting) {
         var gBuilder = new GsonBuilder();
@@ -127,8 +135,22 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // this class will hold all the informations about
     // the ring topology
-    private class Topology {
+    public class Topology {
         private ConcurrentSkipListMap<Long, DataNodeDescriptor> datanodes = new ConcurrentSkipListMap<>();
+
+        /**
+         * Search and return node by id
+         */
+        public DataNodeDescriptor findDataNodeDescriptorById(long id) {
+            return datanodes.get(id);
+        }
+
+        /**
+         * Search and remove node by id
+         */
+        public DataNodeDescriptor removeDataNodeDescriptorById(long id) {
+            return datanodes.remove(id);
+        }
 
         // default topology is only me
         public Topology() {
@@ -150,16 +172,6 @@ public class SimpleCDNHandler implements RequestHandler {
             return prevE.getValue() == node ? null : prevE.getValue();
         }
 
-        // find previous of the current node,
-        // return null if current node is alone
-        // (i.e. it is its own successor)
-        public DataNodeDescriptor findPrevious() {
-            // id of current node
-            var me = SimpleCDNHandler.this.thisnode;
-            // any previous?
-            return findPrevious(me);
-        }
-
         // null means thisnode
         public DataNodeDescriptor findSuccessor(DataNodeDescriptor node) {
             // any successor?
@@ -170,16 +182,6 @@ public class SimpleCDNHandler implements RequestHandler {
             }
             // return other or me
             return succE.getValue() == node ? null : succE.getValue();
-        }
-
-        // find successor of the current node,
-        // return null if current node is alone
-        // (i.e. it is its own successor)
-        public DataNodeDescriptor findSuccessor() {
-            // id of current node
-            var me = SimpleCDNHandler.this.thisnode;
-            // any successor?
-            return findSuccessor(me);
         }
 
         // get hash from file name
@@ -267,10 +269,61 @@ public class SimpleCDNHandler implements RequestHandler {
         public String asJsonArray() {
             return asJsonArray(false);
         }
-    }
 
+        /**
+         * Be R the replication factor used by the ring.
+         * This function is used to get the (if R is big enoug)
+         * R-1 successors and predecessors of the current node,
+         * this is because neighbours (these special nodes)
+         * need to be keep in sync more often than remote nodes.
+         */
+        public List<DataNodeDescriptor> getNeighboours(DataNodeDescriptor centralNode, long R) {
+            List<DataNodeDescriptor> ans = new ArrayList<>();
+            DataNodeDescriptor pred = centralNode, succ = centralNode;
+            for (var i=1; i!=R; ++i) {
+                pred = findPrevious(pred);
+                if (pred == null || ans.contains(pred)) {
+                    // loop!
+                    break;
+                }
+                ans.add(pred);
+                succ = findSuccessor(succ);
+                if (succ == null || ans.contains(succ)) {
+                    // loop!
+                    break;
+                }
+                ans.add(succ);
+            }
+            return ans;
+        }
+    }
+    
     // hold topology seen by this node
     private Topology topology;
+    /**
+     * Directly operate on the current node
+     * @param R
+     * @return
+     */
+    public List<DataNodeDescriptor> getNeighboours() {
+        return topology.getNeighboours(thisnode, thisnode.getReplicationFactor());
+    }
+    
+    // find previous of the current node,
+    // return null if current node is alone
+    // (i.e. it is its own successor)
+    public DataNodeDescriptor findPrevious() {
+        // any previous?
+        return topology.findPrevious(this.thisnode);
+    }
+
+    // find successor of the current node,
+    // return null if current node is alone
+    // (i.e. it is its own successor)
+    public DataNodeDescriptor findSuccessor() {
+        // any successor?
+        return topology.findSuccessor(this.thisnode);
+    }
 
     // respond with redirect message for supplied file
     // return true if current node own specified file
@@ -363,6 +416,69 @@ public class SimpleCDNHandler implements RequestHandler {
                 // TODO: should only log error
             }
             return false;
+        }
+    }
+
+    /**
+     * Info about a new node have been received, are they valid?
+     * Start node hello protocol and, eventually, synchronization
+     * and keepalive.
+     */
+    public void handleRemoteNodeAppearence(DataNodeDescriptor node) {
+        if (node.getManagerendpoint() == null || node.getManagerendpoint().length == 0) {
+            // cannot accept empty endpoint list
+            throw new RuntimeException("Missing management endpoints!");
+        }
+        // check if local endpoint info exists
+        {
+            // query local topology
+            // if local is not null used it and update
+            // if it is null start watching
+        }
+        // otherwise start monitoring
+        var ts = Instant.now();
+    }
+
+    /**
+     * Called when an update is received from a node already
+     * known
+     */
+    public void handleRemoteNodeUpdate(DataNodeDescriptor node) {
+        var ts = Instant.now();
+    }
+
+    /**
+     * To be called when the node with the specified id
+     * leave the topology.
+     */
+    public void handleRemoteNodeExit(long id) {
+        // remove node from topology
+        // check R-1 predecessor for resync
+        // TODO: complete
+    }
+
+    /**
+     * Check if last update timestamp of node has been changed,
+     * in that case launch resync protocol
+     */
+    public void handleKeepAlive(DataNodeDescriptor remoteNode) {
+        var rn = topology.findDataNodeDescriptorById(remoteNode.getId());
+
+        // if different replication factor, ignore
+        if (remoteNode.getReplicationFactor() != thisnode.getReplicationFactor()) {
+            // cannot handle this node
+            // but must assert change!
+            if (rn != null) {
+                // TODO: handle UP and DOWN!
+                handleRemoteNodeExit(rn.getId());
+            }
+            return;
+        }
+        // TODO: handle new node, or keepalive
+        if (rn == null) {
+            handleRemoteNodeAppearence(remoteNode);
+        } else {
+            handleRemoteNodeUpdate(remoteNode);
         }
     }
 
@@ -972,6 +1088,16 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // rely on a thread pool in order to .
     private ExecutorService threadPool;
+    // used to schedule commands after delay
+    private ScheduledExecutorService timedThreadPoll;
+
+    public ExecutorService getThreadPool() {
+        return threadPool;
+    }
+
+    public ScheduledExecutorService getTimedThreadPoll() {
+        return timedThreadPoll;
+    }
 
     @Override
     public void start() throws Exception {
@@ -979,9 +1105,16 @@ public class SimpleCDNHandler implements RequestHandler {
             throw new RuntimeException("Handler already started");
         }
         threadPool = Executors.newCachedThreadPool();
+        httpClient = HttpClient.newBuilder()
+            .version(java.net.http.HttpClient.Version.HTTP_1_1)
+            .followRedirects(Redirect.ALWAYS)
+            .connectTimeout(httpConnectionTimeout)
+            .executor(threadPool)
+            .build();
 
         // UTC start time
         startInstant = Instant.now();
+        thisnode.setStartInstant(startInstant);
 
         // configuration is read inside constructor - so it is handled at startup!
         // discover owned files
@@ -1348,14 +1481,46 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, conf);
         }
 
+        private void handlePOSThello(HttpExchange exchange) throws IOException {
+            try {
+                var is = exchange.getRequestBody();
+                var json = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                var other = DataNodeDescriptor
+                    .fromJson(json);
+                // reply with me
+                sendIdentity(exchange);
+                handleKeepAlive(other);    
+            } catch (Exception e) {
+                // TODO: handle exception
+                httpBadRequest(exchange);
+            }
+        }
+
+        private void handlePOSTtopology(HttpExchange exchange) throws IOException {
+            try {
+                // parse remote node info
+                // they must be checked
+                var is = exchange.getRequestBody();
+                var json = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                var other = DataNodeDescriptor
+                    .fromJson(json);
+                handleRemoteNodeAppearence(other);
+                // reply with seen topology info
+                sendTopologyWithIdentity(exchange);
+            } catch (Exception e) {
+                // TODO: handle exception
+                httpBadRequest(exchange);
+            }
+        }
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             try {
+                var path = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
                 switch (exchange.getRequestMethod()) {
                     case "GET":
                         // retrieve node or topology information
                         {
-                            var path = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
                             // TODO - check if it contains path
                             if (path.equals("topology")) {
                                 // return topology
@@ -1392,6 +1557,24 @@ public class SimpleCDNHandler implements RequestHandler {
                         break;
                     case "POST":
                         // for join operations and so...
+                        {
+                            switch (path) {
+                                case "hello":
+                                    {
+                                        // new node found
+                                        handlePOSThello(exchange);
+                                    }
+                                    break;
+                                case "topology":
+                                    {
+                                        handlePOSTtopology(exchange);
+                                    }
+                                    break;
+                                default:
+                                    httpNotFound(exchange);
+                                    break;
+                            }
+                        }
                         break;
                     default:
                         httpMethodNotAllowed(exchange);
@@ -1715,10 +1898,108 @@ public class SimpleCDNHandler implements RequestHandler {
     // of locally owned files.
 
     private class ControlThread extends Thread {
+        private SimpleCDNHandler cdnHandler = SimpleCDNHandler.this;
+
+        /**
+         * List of peers to be monitored until they came online
+         */
+        private ConcurrentSkipListSet<PeerWatcher> candidates = new ConcurrentSkipListSet<>();
+
+        private volatile boolean stopDiscovery = false;
+        private Runnable discoverTask;
+        private long discoverPeriod = 3; // next try every 30 seconds
+        private void initDiscoveryTask() {
+            discoverTask = () -> {
+                // check all
+                for (var candidate : candidates) {
+                    URI rUri = null;
+                    try {
+                        rUri = candidate.getUrl().toURI()
+                            .resolve(ApiManagementHttpHandler.PATH + "/")
+                            .resolve("hello");
+                    } catch (URISyntaxException e) {
+                        e.printStackTrace();
+                        // disaster!
+                        System.exit(1);
+                    }
+                    // schedule http request
+                    var req = HttpRequest.newBuilder(rUri)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers
+                            .ofString(thisnodeAsJson(), StandardCharsets.UTF_8)
+                        )
+                        .build();
+                    // TODO: complete request
+                    var c = candidate;
+                    cdnHandler.getHttpClient()
+                        .sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
+                        .whenComplete(
+                            (BiConsumer<HttpResponse<String>,Throwable>)
+                            (res, err) -> {
+                                // result received?
+                                if (res != null) {
+                                    // parse object
+                                    try {
+                                        // parse
+                                        var other = DataNodeDescriptor
+                                            .fromJson(res.body());
+                                        handleReceivedDataNodeDescriptor(c, other);
+                                    } catch (Exception e) {
+                                        // TODO: handle exception
+                                    }
+                                } else
+                                if (err != null) {
+
+                                } else {
+                                    // anomaly!!!
+                                    System.err.println("http request error!");
+                                    System.exit(1);
+                                }
+                            }
+                        );
+                }
+                // stopped? If not schedule retry after delay
+                if (!stopDiscovery) {
+                    cdnHandler.getTimedThreadPoll()
+                        .schedule(discoverTask, discoverPeriod, TimeUnit.SECONDS);
+                }
+            };
+        }
+
+        private void handleReceivedDataNodeDescriptor(PeerWatcher candidate, DataNodeDescriptor descriptor) {
+            this.candidates.remove(candidate);
+            handleKeepAlive(descriptor);
+        }
+
+        /**
+         * To be called on thread startup to retrieve
+         * peers to be periodically checked for their online
+         * status 
+         */
+        private void addInitialCandidates() {
+            var conf = cdnHandler.getConfig();
+            // add candidates peer
+            Arrays.stream(conf.getCandidatePeers())
+                .map(ce -> ce.getUrl())
+                .map(PeerWatcher::new)
+                .forEach(candidates::add);
+        }
+
+        private void startDiscoveryTask() {
+            stopDiscovery = false;
+            initDiscoveryTask();
+            cdnHandler.getThreadPool().submit(discoverTask);
+        }
 
         // look for candidate DataNode(s) to connect to
         private void handleJoinProtocol() {
-
+            /**
+             * Look for peers listed in configuration
+             */
+            addInitialCandidates();
+            // schedule candidates search
+            startDiscoveryTask();
+            // after timeout should transit to RUNNING state
         }
 
         // start exit protocol to inform other node of intent
@@ -1764,6 +2045,11 @@ public class SimpleCDNHandler implements RequestHandler {
             }
 
             ;
+        }
+        
+        @Override
+        public void interrupt() {
+
         }
     }
     private ControlThread controlThread;
@@ -1845,7 +2131,7 @@ public class SimpleCDNHandler implements RequestHandler {
         // get management endpoint 
         var me = getRemoteManagementEndpointByNodeId(nodeId);
         // build request URI
-        var rUri = me.toURI().resolve(FileManagementHttpHandler.PATH).resolve(searchPath);
+        var rUri = me.toURI().resolve(FileManagementHttpHandler.PATH + "/").resolve(searchPath);
         // check if local version exists
         var version = fsStatus.getLastSuppliableVersion(searchPath);
         // Build request
@@ -1972,7 +2258,7 @@ public class SimpleCDNHandler implements RequestHandler {
     private void downloadLocalStorageInfoWithIdentityFromRemoteDatanode(long nodeId) throws URISyntaxException, IOException, InterruptedException {
         var me = getRemoteManagementEndpointByNodeId(nodeId);
         // request uri
-        var rUri = me.toURI().resolve(ApiManagementHttpHandler.PATH).resolve("suppliables");
+        var rUri = me.toURI().resolve(ApiManagementHttpHandler.PATH + "/").resolve("suppliables");
         // build http request
         var req = HttpRequest.newBuilder(rUri)
             .GET()
