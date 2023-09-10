@@ -101,6 +101,29 @@ public class SimpleCDNHandler implements RequestHandler {
     // hold informations about current instance
     DataNodeDescriptor thisnode;
 
+    /**
+     * Prevent race condition:
+     *  never decrease timestamp
+     */
+    public Instant updateLastTopologyUpdateTimestamp() {
+        var now = Instant.now();
+        synchronized(thisnode) {
+            if (thisnode.getLastTopologyUpdate().isBefore(now)) {
+                thisnode.setLastTopologyUpdate(now);
+            }
+        }
+        return now;
+    }
+
+    /**
+     * Can this node interact with the other?
+     */
+    public boolean isDataNodeCompatible(DataNodeDescriptor o) {
+        return o.getDataendpoints().length > 0
+         && o.getManagerendpoint().length > 0
+         && thisnode.areComplatible(o);
+    }
+
     public SimpleCDNConfiguration getConfig() {
         return config;
     }
@@ -186,7 +209,7 @@ public class SimpleCDNHandler implements RequestHandler {
 
         // get hash from file name
         public long getFileHash(String path) {
-            return (long)path.hashCode() << 32;
+            return (long)path.hashCode();
         }
 
         public DataNodeDescriptor getFileOwner(String path) {
@@ -294,6 +317,33 @@ public class SimpleCDNHandler implements RequestHandler {
                 }
                 ans.add(succ);
             }
+            return ans;
+        }
+
+        /**
+         * Register a new node in the known topology
+         */
+        public DataNodeDescriptor addDataNodeDescriptor(DataNodeDescriptor descriptor) {
+            var ans = datanodes.put(descriptor.getId(), descriptor);
+            SimpleCDNHandler.this.updateLastTopologyUpdateTimestamp();
+            return ans;
+        }
+
+        /**
+         * Remove DataNodeDescriptor from map, but assert the item
+         * to be removed has not been changed
+         * Return true if the item has been removed (or if nothing
+         * is remained), return false if the item was not anymore
+         * inside the map
+         */
+        public boolean removeDataNodeDescriptor(DataNodeDescriptor descriptor) {
+            var ans = datanodes.compute(descriptor.getId(), (k,v) -> {
+                if (v == descriptor) {
+                    SimpleCDNHandler.this.updateLastTopologyUpdateTimestamp();
+                    return null;
+                }
+                return v;
+            }) == null;
             return ans;
         }
     }
@@ -420,26 +470,6 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     /**
-     * Info about a new node have been received, are they valid?
-     * Start node hello protocol and, eventually, synchronization
-     * and keepalive.
-     */
-    public void handleRemoteNodeAppearence(DataNodeDescriptor node) {
-        if (node.getManagerendpoint() == null || node.getManagerendpoint().length == 0) {
-            // cannot accept empty endpoint list
-            throw new RuntimeException("Missing management endpoints!");
-        }
-        // check if local endpoint info exists
-        {
-            // query local topology
-            // if local is not null used it and update
-            // if it is null start watching
-        }
-        // otherwise start monitoring
-        var ts = Instant.now();
-    }
-
-    /**
      * Called when an update is received from a node already
      * known
      */
@@ -455,31 +485,6 @@ public class SimpleCDNHandler implements RequestHandler {
         // remove node from topology
         // check R-1 predecessor for resync
         // TODO: complete
-    }
-
-    /**
-     * Check if last update timestamp of node has been changed,
-     * in that case launch resync protocol
-     */
-    public void handleKeepAlive(DataNodeDescriptor remoteNode) {
-        var rn = topology.findDataNodeDescriptorById(remoteNode.getId());
-
-        // if different replication factor, ignore
-        if (remoteNode.getReplicationFactor() != thisnode.getReplicationFactor()) {
-            // cannot handle this node
-            // but must assert change!
-            if (rn != null) {
-                // TODO: handle UP and DOWN!
-                handleRemoteNodeExit(rn.getId());
-            }
-            return;
-        }
-        // TODO: handle new node, or keepalive
-        if (rn == null) {
-            handleRemoteNodeAppearence(remoteNode);
-        } else {
-            handleRemoteNodeUpdate(remoteNode);
-        }
     }
 
     /**
@@ -1105,6 +1110,7 @@ public class SimpleCDNHandler implements RequestHandler {
             throw new RuntimeException("Handler already started");
         }
         threadPool = Executors.newCachedThreadPool();
+        timedThreadPoll = Executors.newScheduledThreadPool(1);
         httpClient = HttpClient.newBuilder()
             .version(java.net.http.HttpClient.Version.HTTP_1_1)
             .followRedirects(Redirect.ALWAYS)
@@ -1114,7 +1120,8 @@ public class SimpleCDNHandler implements RequestHandler {
 
         // UTC start time
         startInstant = Instant.now();
-        thisnode.setStartInstant(startInstant);
+        thisnode.initAllTimestamps(startInstant);
+        thisnode.setStatus(DataNodeDescriptor.Status.RUNNING);
 
         // configuration is read inside constructor - so it is handled at startup!
         // discover owned files
@@ -1127,7 +1134,7 @@ public class SimpleCDNHandler implements RequestHandler {
         //  discover topology
         //  find previous node
         //  start replication strategy
-        startControlThread();
+        startPeerSearch();
 
 
         //  start client endpoint
@@ -1153,7 +1160,11 @@ public class SimpleCDNHandler implements RequestHandler {
         // service disruption to clients
         stopClientEndpoints();
 
+        timedThreadPoll.shutdown();
         threadPool.shutdown();
+        timedThreadPoll.awaitTermination(180, TimeUnit.SECONDS);
+        threadPool.awaitTermination(180, TimeUnit.SECONDS);
+        timedThreadPoll = null;
         threadPool = null;
 
         // TODO Auto-generated method stub
@@ -1489,7 +1500,8 @@ public class SimpleCDNHandler implements RequestHandler {
                     .fromJson(json);
                 // reply with me
                 sendIdentity(exchange);
-                handleKeepAlive(other);    
+                // new node discovered?
+                watchIfNotWatched(other);
             } catch (Exception e) {
                 // TODO: handle exception
                 httpBadRequest(exchange);
@@ -1504,9 +1516,10 @@ public class SimpleCDNHandler implements RequestHandler {
                 var json = new String(is.readAllBytes(), StandardCharsets.UTF_8);
                 var other = DataNodeDescriptor
                     .fromJson(json);
-                handleRemoteNodeAppearence(other);
                 // reply with seen topology info
                 sendTopologyWithIdentity(exchange);
+                // new node discovered?
+                watchIfNotWatched(other);
             } catch (Exception e) {
                 // TODO: handle exception
                 httpBadRequest(exchange);
@@ -1586,6 +1599,33 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
     }
+
+    public HttpRequest buildApiTopologyPOST(URI uri) {
+        var rUri = uri
+            .resolve(ApiManagementHttpHandler.PATH + "/")
+            .resolve("topology");
+        var req = HttpRequest.newBuilder(rUri)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers
+                .ofString(thisnodeAsJson(), StandardCharsets.UTF_8)
+            )
+            .build();
+        return req;
+    }
+
+    public HttpRequest buildApiHelloPOST(URI uri) {
+        var rUri = uri
+            .resolve(ApiManagementHttpHandler.PATH + "/")
+            .resolve("hello");
+        var req = HttpRequest.newBuilder(rUri)
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers
+                .ofString(thisnodeAsJson(), StandardCharsets.UTF_8)
+            )
+            .build();
+        return req;
+    }
+
     // listen for PUT and DELETE commands
     private class FileManagementHttpHandler implements HttpHandler {
         public static final String PATH = "/file";
@@ -1897,189 +1937,158 @@ public class SimpleCDNHandler implements RequestHandler {
     // failure of other nodes, changes in the topology and replication
     // of locally owned files.
 
-    private class ControlThread extends Thread {
-        private SimpleCDNHandler cdnHandler = SimpleCDNHandler.this;
+    /**
+     * List of peers to be monitored.
+     * Associate URL with PeerWatcher
+     */
+    private ConcurrentSkipListMap<String, PeerWatcher> candidates;
+    /**
+     * Used to retrieve watchers once they have been associated with
+     * a remote peer
+     */
+    private ConcurrentSkipListMap<Long, PeerWatcher> candidatesById;
 
-        /**
-         * List of peers to be monitored until they came online
-         */
-        private ConcurrentSkipListSet<PeerWatcher> candidates = new ConcurrentSkipListSet<>();
-
-        private volatile boolean stopDiscovery = false;
-        private Runnable discoverTask;
-        private long discoverPeriod = 3; // next try every 30 seconds
-        private void initDiscoveryTask() {
-            discoverTask = () -> {
-                // check all
-                for (var candidate : candidates) {
-                    URI rUri = null;
-                    try {
-                        rUri = candidate.getUrl().toURI()
-                            .resolve(ApiManagementHttpHandler.PATH + "/")
-                            .resolve("hello");
-                    } catch (URISyntaxException e) {
-                        e.printStackTrace();
-                        // disaster!
-                        System.exit(1);
-                    }
-                    // schedule http request
-                    var req = HttpRequest.newBuilder(rUri)
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers
-                            .ofString(thisnodeAsJson(), StandardCharsets.UTF_8)
-                        )
-                        .build();
-                    // TODO: complete request
-                    var c = candidate;
-                    cdnHandler.getHttpClient()
-                        .sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
-                        .whenComplete(
-                            (BiConsumer<HttpResponse<String>,Throwable>)
-                            (res, err) -> {
-                                // result received?
-                                if (res != null) {
-                                    // parse object
-                                    try {
-                                        // parse
-                                        var other = DataNodeDescriptor
-                                            .fromJson(res.body());
-                                        handleReceivedDataNodeDescriptor(c, other);
-                                    } catch (Exception e) {
-                                        // TODO: handle exception
-                                    }
-                                } else
-                                if (err != null) {
-
-                                } else {
-                                    // anomaly!!!
-                                    System.err.println("http request error!");
-                                    System.exit(1);
-                                }
-                            }
-                        );
-                }
-                // stopped? If not schedule retry after delay
-                if (!stopDiscovery) {
-                    cdnHandler.getTimedThreadPoll()
-                        .schedule(discoverTask, discoverPeriod, TimeUnit.SECONDS);
-                }
-            };
-        }
-
-        private void handleReceivedDataNodeDescriptor(PeerWatcher candidate, DataNodeDescriptor descriptor) {
-            this.candidates.remove(candidate);
-            handleKeepAlive(descriptor);
-        }
-
-        /**
-         * To be called on thread startup to retrieve
-         * peers to be periodically checked for their online
-         * status 
-         */
-        private void addInitialCandidates() {
-            var conf = cdnHandler.getConfig();
-            // add candidates peer
-            Arrays.stream(conf.getCandidatePeers())
-                .map(ce -> ce.getUrl())
-                .map(PeerWatcher::new)
-                .forEach(candidates::add);
-        }
-
-        private void startDiscoveryTask() {
-            stopDiscovery = false;
-            initDiscoveryTask();
-            cdnHandler.getThreadPool().submit(discoverTask);
-        }
-
-        // look for candidate DataNode(s) to connect to
-        private void handleJoinProtocol() {
-            /**
-             * Look for peers listed in configuration
-             */
-            addInitialCandidates();
-            // schedule candidates search
-            startDiscoveryTask();
-            // after timeout should transit to RUNNING state
-        }
-
-        // start exit protocol to inform other node of intent
-        // to leave the ring
-        private void handleExitProtocol() {
-
-        }
-
-        private void handleRunningStatus() {
-
-        }
-
-        @Override
-        public void run() {
-            handleJoinProtocol();
-            handleRunningStatus();
-            handleExitProtocol();
-        }
-
-        /**
-         * Before:
-         *  current node status must be DataNodeDescriptor.Status.SHUTDOWN
-         * After:
-         *  current node status must be DataNodeDescriptor.Status.RUNNING
-         */
-        public void waitForStartingProtocolCompletion() {
-            if (thisnode.status != DataNodeDescriptor.Status.SHUTDOWN) {
-                throw new RuntimeException("Node status is not SHUTDOWN: " + thisnode.status);
+    private void watchIfNotWatched(DataNodeDescriptor remoteNode) throws URISyntaxException {
+        var rn = topology.findDataNodeDescriptorById(remoteNode.getId());
+        if (rn == null && isDataNodeCompatible(remoteNode)) {
+            for (var me : remoteNode.getManagerendpoint()) {
+                watch(me);
             }
-
-            ;
-        }
-
-        /**
-         * Before:
-         *  current node status must be DataNodeDescriptor.Status.RUNNING
-         * After:
-         *  current node status must be DataNodeDescriptor.Status.SHUTDOWN
-         */
-        public void waitForStoppingProtocolCompletion() {
-            if (thisnode.status != DataNodeDescriptor.Status.RUNNING) {
-                throw new RuntimeException("Node status is not RUNNING: " + thisnode.status);
-            }
-
-            ;
-        }
-        
-        @Override
-        public void interrupt() {
-
         }
     }
-    private ControlThread controlThread;
+
+    /**
+     * Start watching for a remote peer
+     * @param url
+     * @throws URISyntaxException
+     */
+    private void watch(URL url) throws URISyntaxException {
+        var pw = new PeerWatcher(this, url);
+        // register new watcher - only if necessary
+        candidates.computeIfAbsent(url.toString(), s -> {
+            pw.start();
+            return pw;
+        });
+    }
 
     // start control thread, return when JOIN protocol is terminated
-    private void startControlThread() {
-        if (controlThread != null) {
-            throw new RuntimeException("Control thread already started");
+    private void startPeerSearch() throws URISyntaxException {
+        candidates = new ConcurrentSkipListMap<>();
+        candidatesById = new ConcurrentSkipListMap<>();
+        var cep = getConfig().getCandidatePeers();
+        for (var ce : cep) {
+            watch(ce.getUrl());
         }
-        // ...
-        controlThread = new ControlThread();
-        controlThread.start();
-        controlThread.waitForStartingProtocolCompletion();
-
     }
 
-    private void stopControlThread() {
-        if (controlThread == null) {
-            throw new RuntimeException("Control thread not started");
+    /**
+     * Callback used by PeerWatcher(s) when they discover a remote
+     * peer.
+     * Return true if association success, otherwise false.
+     * If true, Watcher should interrupt keepalive
+     */
+    public boolean associatePeerWithWatcher(DataNodeDescriptor peer, PeerWatcher watcher) {
+        // is there already a watcher for this peer?
+        var ans = candidatesById.compute(peer.getId(),
+            (BiFunction<Long,PeerWatcher,PeerWatcher>)
+            (k, v) -> {
+                // assert idempotence, used when remote change
+                if (v == watcher) {
+                    return v;
+                }
+                // was a watcher already associated with
+                // the remote peer?
+                if (v != null) {
+                    // same instance?
+                    if (peer.describeSameInstance(v.getAssociatedPeer())) {
+                        // is this case do nothing
+                        return v;                        
+                    } else {
+                        // disable previous
+                        v.unbind();
+                        v.stop();
+                        // remove watcher from URL-PeerWatcher map
+                        candidates.compute(v.getUrl().toString(), (kk, vv) -> {
+                            if (v == vv) {
+                                return null;
+                            }
+                            // else do nothing
+                            return vv;
+                        });
+                    }
+                }
+                // associate node with
+                watcher.bind(peer);
+                // add node to topology
+                topology.addDataNodeDescriptor(peer);
+                return watcher;
+            }
+        );
+        // was this watcher associated with the peer?
+        var associated = ans == watcher;
+        if (!associated) {
+            // stop peer
+            watcher.start();
         }
-        // ...
-        controlThread.interrupt();
-        controlThread.waitForStoppingProtocolCompletion();
-        try {
-            controlThread.join();
-        } catch (InterruptedException e) {
-            System.err.println(e);
-            e.printStackTrace();
+        return associated;
+    }
+
+    /**
+     * Called by a PeerWatcher when it consider a remote node
+     * failed or dead
+     * @param peers
+     * @throws URISyntaxException
+     */
+    public void decouplePeerFromWatcher(DataNodeDescriptor peer, PeerWatcher watcher) {
+        var w = candidatesById.compute(peer.getId(), (k, v) -> {
+            if (watcher == v) {
+                return null;
+            } else {
+                return v;
+            }
+        });
+        if (w == watcher) {
+            watcher.unbind();
         }
-        controlThread = null;
+        // after 120 seconds, schedule node removal from topology
+        getTimedThreadPoll()
+        .schedule(() -> {
+            topology.removeDataNodeDescriptor(peer);
+        }, 120, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Callback used by PeerWatcher(s) when they receive topology
+     * updates.
+     * @throws URISyntaxException
+     */
+    public void possiblePeers(DataNodeDescriptor[] peers) throws URISyntaxException {
+        for (var peer : peers) {
+            // check only compatible peers
+            if (this.isDataNodeCompatible(peer)) {
+                // is this peer already known?
+                var known = topology.findDataNodeDescriptorById(peer.getId());
+                if (known == null) {
+                    // new to watch
+                    for (var url : peer.getManagerendpoint()) {
+                        watch(url);
+                    }
+                } else {
+                    // if equals do nothing by default
+                    // Possible update: fast propagation
+                    // of topology updates in the future
+                }
+            }
+        }
+    }
+
+    private void stopPeerSearch() {
+        // stop all pairs
+        for (var pw : candidates.values()) {
+            pw.stop();
+        }
+        candidates = null;
+        candidatesById = null;
     }
 
     /**

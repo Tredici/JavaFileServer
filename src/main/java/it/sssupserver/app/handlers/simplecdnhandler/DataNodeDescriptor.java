@@ -149,6 +149,17 @@ public class DataNodeDescriptor {
         this.startInstant = startInstant;
     }
 
+    /**
+     * Set start instant, no timestamp can be lower than
+     * the start one
+     */
+    public void initAllTimestamps(Instant startInstant) {
+        this.startInstant = startInstant;
+        this.lastStatusChange = startInstant;
+        this.lastTopologyUpdate = startInstant;
+        this.lastFileUpdate = startInstant;
+    }
+
     public URL getRandomDataEndpointURL() {
         var l = dataendpoints.length;
         var de = dataendpoints[(int)(l*Math.random())];
@@ -164,9 +175,74 @@ public class DataNodeDescriptor {
     public static DataNodeDescriptor fromJson(String json) {
         DataNodeDescriptor ans;
         var gson = new GsonBuilder()
-            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptor())
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
             .create();
         ans = gson.fromJson(json, DataNodeDescriptor.class);
         return ans;
+    }
+
+    /**
+     * Are this and the other DataNodeDescriptor compatible?
+     * They are compatible if they share the same replication factor
+     */
+    public boolean areComplatible(DataNodeDescriptor o) {
+        if (o == null) {
+            return false;
+        }
+        return getReplicationFactor() == o.getReplicationFactor();
+    }
+
+    /**
+     * Check if two descriptors refer to the same instance,
+     * i.e. if they share the same Id, R and start time
+     */
+    public boolean describeSameInstance(DataNodeDescriptor o) {
+        return o != null
+            && getId() == o.getId()
+            && getReplicationFactor() == o.getReplicationFactor()
+            && getStartInstant().equals(o.getStartInstant())
+            ;
+    }
+
+    /**
+     * Does new descriptor inform about topology updates?
+     * WARNING: update timestamp!
+     * THIS FUNCTION IS NOT IDEMPOTENT!
+     */
+    public boolean availableTopologyUpdate(DataNodeDescriptor o) {
+        if (describeSameInstance(o) && getLastTopologyUpdate().isBefore(o.getLastTopologyUpdate())) {
+            // update this timer
+            setLastTopologyUpdate(o.getLastTopologyUpdate());
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Does new descriptor inform about file updates?
+     * WARNING: update timestamp!
+     * THIS FUNCTION IS NOT IDEMPOTENT!
+     */
+    public boolean availableFileUpdate(DataNodeDescriptor o) {
+        if (describeSameInstance(o) && getLastFileUpdate().isBefore(o.getLastFileUpdate())) {
+            // update this timer
+            setLastFileUpdate(o.getLastFileUpdate());
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Is status of remote node changed?
+     */
+    public boolean availableStatusUpdate(DataNodeDescriptor o) {
+        if (describeSameInstance(o) && getLastStatusChange().isBefore(o.getLastStatusChange())) {
+            // update this timer
+            setLastStatusChange(o.getLastStatusChange());
+            // update status
+            setStatus(o.getStatus());
+            return true;
+        }
+        return false;
     }
 }

@@ -2,6 +2,7 @@ package it.sssupserver.app.handlers.simplecdnhandler;
 
 import java.lang.reflect.Type;
 import java.net.URL;
+import java.time.Instant;
 
 import com.google.gson.JsonDeserializationContext;
 import com.google.gson.JsonDeserializer;
@@ -23,6 +24,9 @@ public class DataNodeDescriptorGson
         jObj.add("ManagerEndpoint", context.serialize(src.managerendpoint));
         jObj.addProperty("StartInstant", src.getStartInstant().toEpochMilli());
         jObj.addProperty("Status", src.status.toString());
+        jObj.addProperty("LastFileUpdate", src.getLastFileUpdate().toEpochMilli());
+        jObj.addProperty("LastStatusChange", src.getLastStatusChange().toEpochMilli());
+        jObj.addProperty("LastTopologyUpdate", src.getLastTopologyUpdate().toEpochMilli());
         return jObj;
     }
 
@@ -35,6 +39,10 @@ public class DataNodeDescriptorGson
         ans.setId(jObj.get("Id").getAsLong());
         ans.setReplicationFactor(jObj.get("ReplicationFactor").getAsInt());
         ans.setStatus(DataNodeDescriptor.Status.valueOf(jObj.get("Status").getAsString()));
+        ans.setStartInstant(Instant.ofEpochMilli(jObj.get("StartInstant").getAsLong()));
+        ans.setLastFileUpdate(Instant.ofEpochMilli(jObj.get("LastFileUpdate").getAsLong()));
+        ans.setLastTopologyUpdate(Instant.ofEpochMilli(jObj.get("LastTopologyUpdate").getAsLong()));
+        ans.setLastStatusChange(Instant.ofEpochMilli(jObj.get("LastStatusChange").getAsLong()));
         {
             // read management endpoints
             var jArray = jObj.get("ManagerEndpoint").getAsJsonArray();
