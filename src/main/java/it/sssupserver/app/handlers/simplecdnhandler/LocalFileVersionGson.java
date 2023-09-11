@@ -36,6 +36,7 @@ public class LocalFileVersionGson implements JsonSerializer<SimpleCDNHandler.Man
             jObj.addProperty("HashAlgorithm", v.getHashAlgotrithm());
             jObj.addProperty("Hash", bytesToHex(v.getFileHash()));
             jObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
+            jObj.addProperty("Deleted", v.isDeleted());
         } else {
             var versions = src.getAllVersions();
             var jArray = new JsonArray(versions.length);
@@ -46,6 +47,7 @@ public class LocalFileVersionGson implements JsonSerializer<SimpleCDNHandler.Man
                 vObj.addProperty("Hash", bytesToHex(v.getFileHash()));
                 vObj.addProperty("LastUpdated", v.getLastUpdateTimestamp().toEpochMilli());
                 vObj.addProperty("RealPath", v.getPath().toString());
+                vObj.addProperty("Deleted", v.isDeleted());
                 jArray.add(vObj);
             }
             jObj.add("Versions", jArray);
