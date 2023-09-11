@@ -67,6 +67,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
@@ -516,10 +517,44 @@ public class SimpleCDNHandler implements RequestHandler {
                  *  timestamp:file_size:hash_algoritm:hash_string
                  */
                 public String generateHttpETagHeader() {
-                    return node.getLastModified().toEpochMilli()
-                        + ":" + node.getSize()
-                        + ":" + node.getHashAlgorithm()
-                        + ":" + bytesToHex(node.getFileHash());
+                    return SimpleCDNHandler.generateHttpETagHeader(
+                        node.getLastModified(),
+                        node.getSize(),
+                        node.getHashAlgorithm(),
+                        node.getFileHash()
+                        );
+                }
+
+                /**
+                 * Compare local version with remote one
+                 */
+                public boolean isRemoteNewer(RemoteFileInfo remoteFile) {
+                    // compare timestamps
+                    if (remoteFile.getBestVersion().getTimestamp().isBefore(this.getLastUpdateTimestamp())) {
+                        // remote is older, ignore
+                        return false;
+                    } else if (remoteFile.getBestVersion().getTimestamp().isAfter(this.getLastUpdateTimestamp())) {
+                        // remote is newer, can download
+                        return true;
+                    }
+                    // same age, compare deleted status
+                    if (remoteFile.getBestVersion().isDeleted()) {
+                        // if only remote deleted, update, otherwise do nothing
+                        return !this.isDeleted();
+                    }
+                    // if only local is deleted ignore remote
+                    if (this.isDeleted()) {
+                        return false;
+                    }
+                    // prefer simpler hashing algorithm - same logic used for
+                    // RemoteFileInfo.Version.compareTo
+                    var cmpHA = remoteFile.getBestVersion().getHashAlgorithm()
+                        .compareTo(this.getHashAlgotrithm());
+                    if (cmpHA != 0) {
+                        return cmpHA > 0;
+                    }
+                    // prefer greate hash value
+                    return Arrays.compare(remoteFile.getBestVersion().getFileHash(), this.getFileHash()) > 0;
                 }
             }
 
@@ -607,6 +642,17 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         /**
+         * Check if downloading the remote file would
+         */
+        public boolean isRemoteVersionDownloadable(RemoteFileInfo remoteFile) {
+            var last = getLastSuppliableVersion(remoteFile.getSearchPath().toString());
+            if (last == null) {
+                return true;
+            }
+            return last.isRemoteNewer(remoteFile);
+        }
+
+        /**
          * Map searchPath for a file (the one receiven in
          * HTTP requests) and map it into the local file version
          */
@@ -621,6 +667,58 @@ public class SimpleCDNHandler implements RequestHandler {
                 return null;
             }
             return v.getPath();
+        }
+
+        /**
+         * Check the last version of the a file here held.
+         * If it exists compare with the to-be-deleted one:
+         *  - if it is newer do nothing
+         *  - if it is older (or equal) replace with this
+         * @throws Exception
+         */
+        public void addDeletedVersion(RemoteFileInfo deleted) throws Exception {
+            var searchPath = deleted.getSearchPath().toString();
+            // find last version
+            var last = getLastSuppliableVersion(searchPath);
+            if (last == null) {
+                // create new node and add version
+                // TODO: get inspiration from DELETE /file
+                // get ETag of the file
+                var eTag = deleted.getETag();
+                var dc = new StringBuilder()
+                    .append(eTag)
+                    .append('\n')
+                    .toString();
+                // generate content of new file
+                var bytecontent = dc.getBytes(StandardCharsets.UTF_8);
+                // put content in a buffer
+                var w = BufferManager.getBuffer();
+                var buf = w.get();
+                buf.put(bytecontent);
+                buf.flip();
+                // metadata
+                var metadata = new FilenameMetadata(
+                    deleted.getSearchPath().getBasename(),
+                    deleted.getBestVersion().getTimestamp(),
+                    false,
+                    false,
+                    true);
+                // file name
+                var dstPath = deleted.getSearchPath().getDirname()
+                    .createSubfile(metadata.toString());
+                // schedule creation of file
+                var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
+                if (cc.getFuture().get() != true) {
+                    throw new RuntimeException("Failed to delete file: " + searchPath);
+                }
+                // add new node
+                var newNode = addRegularFileNode(dstPath);
+                newNode.setSize(deleted.getBestVersion().getSize());
+                newNode.setFileHash(deleted.getBestVersion().getHashAlgorithm(), deleted.getBestVersion().getFileHash());
+            } else if (last.isRemoteNewer(deleted)) {
+                last.markAsDeleted();
+            }
+            // otherwise do nothing
         }
 
         /**
@@ -851,6 +949,109 @@ public class SimpleCDNHandler implements RequestHandler {
 
     private ManagedFileSystemStatus fsStatus;
 
+    /**
+     * Auxiliary class used to periodically check download requests
+     * and schedule them
+     */
+    private DownloadManager downloadManager = new DownloadManager(this);
+    private class DownloadManager implements Runnable {
+        public static final long DOWNLOAD_PERIOD = 15;
+        public static final TimeUnit PERIOD_UNIT = TimeUnit.SECONDS;
+
+        private SimpleCDNHandler handler;
+
+        public DownloadManager(SimpleCDNHandler handler) {
+            this.handler = handler;
+        }
+
+        /**
+         * Data structure used to coordinate requests of files to be
+         * downloaded.
+         */
+        private final ConcurrentMap<String, RemoteFileInfo> downloadRequests = new ConcurrentSkipListMap<>();
+        
+        // used to prevent mixing
+        private ConcurrentSkipListSet<String> locks = new ConcurrentSkipListSet<>();
+
+        private ScheduledFuture<?> schedule;
+        public void start() {
+            schedule = this.handler.getTimedThreadPool()
+            .scheduleWithFixedDelay(this, DOWNLOAD_PERIOD, DOWNLOAD_PERIOD, PERIOD_UNIT);
+        }
+        public void stop() {
+            schedule.cancel(false);
+            downloadRequests.clear();
+        }
+
+        private void startDownloadOrDeletion(String searchPath, RemoteFileInfo file) throws Exception {
+            // check for deletion
+            if (file.getBestVersion().isDeleted()) {
+                // no need to delete a remote node
+                fsStatus.addDeletedVersion(file);
+                // release lock
+                locks.remove(searchPath);
+            } else {
+                // schedule query and response
+                // TODO: handle deletion
+            }
+        }
+
+        @Override
+        public void run() {
+            // iterate over all requests and schedule them
+            for (var req : downloadRequests.entrySet()) {
+                var searchPath = req.getKey();
+                // try to "lock" key
+                if (locks.add(searchPath)) {
+                    // remove request
+                    var file = downloadRequests.remove(searchPath);
+                    // schedule download
+                    try {
+                        startDownloadOrDeletion(DEFAULT_CONFIG_FILE, file);
+                    } catch (Exception e) {
+                        // prevent livelock
+                        locks.remove(searchPath);
+                        // TODO Auto-generated catch block
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
+        public void addDownloadRequest(RemoteFileInfo file) {
+            var searchPath = file.getSearchPath().toString();
+            downloadRequests.merge(searchPath, file, (v1, v2) -> {
+                return v1.merge(v2);
+            });
+        }
+
+        /**
+         * Handle download of a single, specific file
+         * Or deletion (that does not require download)
+         */
+    }
+
+    /**
+     * Callback used by PeerWatcher then receive the list of files
+     * owned by the remote node
+     */
+    public void possibleFiles(DataNodeDescriptor peer, RemoteFileInfo[] files) {
+        for (var file : files) {
+            // should this node supply this file?
+            var searchPath = file.getSearchPath().toString();
+            if (topology.isFileSupplier(searchPath)) {
+                // is file locally available?
+                if (fsStatus.isRemoteVersionDownloadable(file)) {
+                    // associate file to peer
+                    file.addCandidateSupplier(peer);
+                    // put file into possible download requests
+                    // periodic task will handle it
+                    downloadManager.addDownloadRequest(file);
+                }
+            }
+        }
+    }
+
     // HTTP server used to reply to clients
     private HttpServer clienthttpserver;
     private InetSocketAddress listening_client_address;
@@ -942,6 +1143,9 @@ public class SimpleCDNHandler implements RequestHandler {
         // start manager endpoint
         startManagementEndpoint();
 
+        // start download manager
+        downloadManager.start();
+
         // start join protocol:
         //  discover topology
         //  find previous node
@@ -966,6 +1170,12 @@ public class SimpleCDNHandler implements RequestHandler {
         // start exit protocol
         // shutdown manager endpoint
         stopManagementEndpoint();
+
+        // stop peer search
+        stopPeerSearch();
+
+        // stop download manager
+        downloadManager.stop();
 
         // shutdown client endpoint
         // this is the last stage in order to reduce
@@ -1434,6 +1644,16 @@ public class SimpleCDNHandler implements RequestHandler {
             .POST(HttpRequest.BodyPublishers
                 .ofString(thisnodeAsJson(), StandardCharsets.UTF_8)
             )
+            .build();
+        return req;
+    }
+
+    public HttpRequest buildApiSuppliablesGET(URI uri) {
+        var rUri = uri
+            .resolve(ApiManagementHttpHandler.PATH + "/")
+            .resolve("suppliables");
+        var req = HttpRequest.newBuilder(rUri)
+            .GET()
             .build();
         return req;
     }
@@ -2090,5 +2310,17 @@ public class SimpleCDNHandler implements RequestHandler {
             // bad result
             return;
         }
+    }
+
+    public static String generateHttpETagHeader(
+        Instant lastModified,
+        long size,
+        String hashAlgorithm,
+        byte[] fileHash
+    ) {
+        return lastModified.toEpochMilli()
+            + ":" + size
+            + ":" + hashAlgorithm
+            + ":" + bytesToHex(fileHash);
     }
 }

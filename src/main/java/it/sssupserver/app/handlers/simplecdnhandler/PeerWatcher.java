@@ -44,6 +44,8 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     public static final long KEEP_ALIVE_DELAY = 3;
     // TopologyWatcher parameter
     public static final long TOPOLOGY_DELAY = 3;
+    // FileWatcher parameter
+    public static final long FILE_WATCHER_DELAY = 1;
 
     // After ERROR_LIMIT consecutive errors, trigger deletion
     public static final int ERROR_LIMIT = 3;
@@ -70,6 +72,8 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     private PeerKeepAliver peerKeepAliver = new PeerKeepAliver();
     // used to get topology updates
     private TopologyWatcher peerTopologyWatcher = new TopologyWatcher();
+    // used to get file updates
+    private FileWatcher peerFileWatcher = new FileWatcher();
 
     // Only SimpleCDN handler can instantiate new watchers
     PeerWatcher(SimpleCDNHandler handler, URL remoteUrl) throws URISyntaxException {
@@ -117,7 +121,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
      * Schedule POST /api/topology to peer,
      * do nothing if it has already been scheduled
      */
-    public void schedule(long delay) {
+    public synchronized void schedule(long delay) {
         if (isStarted() || schedule == null || schedule.isDone()) {
             schedule = getTimedThreadPool()
             .schedule(this, delay, TIME_UNIT);
@@ -222,6 +226,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
         // held by the node in order to start downloading
         // the ones that this node will be cherged of
         // supplying
+        peerFileWatcher.schedule();
     }
 
     /**
@@ -342,7 +347,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
         /**
          * Schedule a new POST /api/identity
          */
-        private void schedule(long delay) {
+        private synchronized void schedule(long delay) {
             if (isStarted() || schedule == null || schedule.isDone()) {
                 schedule = getTimedThreadPool()
                 .schedule(this, delay, TIME_UNIT);
@@ -362,13 +367,18 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
             if (err != null || (res != null && res.statusCode() != 200)) {
                 onError();
             } else {
+                var ap = associatedPeer;
+                if (ap == null) {
+                    // prevent race condition
+                    return;
+                }
                 try {
                     var json = res.body();
                     var identity = DataNodeDescriptor.fromJson(json);
                     // check if the response come from the node we know
-                    if (!associatedPeer.describeSameInstance(identity)) {
+                    if (!ap.describeSameInstance(identity)) {
                         // decouple from current peer
-                        handler.decouplePeerFromWatcher(associatedPeer, PeerWatcher.this);
+                        handler.decouplePeerFromWatcher(ap, PeerWatcher.this);
                         // create new association
                         handler.associatePeerWithWatcher(identity, PeerWatcher.this);
                     } else {
@@ -434,7 +444,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                     var json = res.body();
                     var data = TopologyWithIdentityGson.parse(json);
                     // check if identity available
-                    if (data.getIdentity() != null || handler.isDataNodeCompatible(data.getIdentity())) {
+                    if (data.getIdentity() != null && handler.isDataNodeCompatible(data.getIdentity())) {
                         // report list of possible new peers
                         handler.possiblePeers(data.getSnapshot());                        
                         // reset error counter
@@ -477,7 +487,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
             schedule(TOPOLOGY_DELAY);
         }
 
-        private void reschedule(long delay) {
+        private synchronized void reschedule(long delay) {
             if (schedule == null || schedule.isDone()) {
                 schedule = getTimedThreadPool()
                 .schedule(this, delay, TIME_UNIT);
@@ -487,5 +497,102 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
         private void reschedule() {
             reschedule(TOPOLOGY_DELAY);
         }
+    }
+
+    /**
+     * Auxiliary class used to query the remote endpoint
+     * GET /api/suppliables
+     */
+    private class FileWatcher implements Runnable, BiConsumer<HttpResponse<String>,Throwable> {
+
+        private AtomicInteger errorCounter = new AtomicInteger();
+        private Instant lastError;
+
+        private void onError() {
+            lastError = Instant.now();
+            if (errorCounter.incrementAndGet() < ERROR_LIMIT) {
+                reschedule();
+            }
+        }
+
+        private ScheduledFuture<?> schedule;
+
+        /**
+         * Immediately start a file check
+         */
+        public synchronized void schedule() {
+            if (schedule != null && !schedule.isDone()) {
+                // maybe pending, stop wait and trigger immediately
+                schedule.cancel(false);
+            }
+            // reset error count
+            errorCounter.set(0);
+            getThreadPool().execute(this);
+        }
+
+        /**
+         * Called internally in case of errors
+         */
+        private synchronized void reschedule() {
+            // do nothing if already queued
+            if (schedule == null || schedule.isDone() || schedule.isCancelled()) {
+                // otherwise schedule
+                schedule = getTimedThreadPool()
+                .schedule(this, FILE_WATCHER_DELAY, TIME_UNIT);
+            }
+        }
+
+        /**
+         * GET /api/suppliables response
+         */
+        @Override
+        public void accept(HttpResponse<String> res, Throwable err) {
+            if (err != null || (res != null && res.statusCode() != 200)) {
+                onError();
+            } else {
+                var ap = associatedPeer;
+                if (ap == null) {
+                    // prevent race condition
+                    return;
+                }
+                try {
+                    var json = res.body();
+                    var remotes = RemoteFilesWithIdentityGson.parse(json);
+                    if (remotes.getIdentity() != null && ap.describeSameInstance(remotes.getIdentity())) {
+                        // only if valid identity check content
+                        var files = remotes.getFiles();
+                        handler.possibleFiles(ap, files);
+                        // nothing more to do, it will be the handler
+                        // charged of handling downloads
+                    }
+                    // no error
+                    errorCounter.set(0);
+                } catch (Exception e) {
+                    onError();
+                }
+            }
+        }
+
+        /**
+         * GET /api/suppliables request
+         */
+        @Override
+        public void run() {
+            var ap = associatedPeer;
+            if (ap == null) {
+                // prevent race condition
+                return;
+            }
+            try {
+                var rUri = ap.getRandomManagementEndpointURL().toURI();
+                var req = handler.buildApiSuppliablesGET(rUri);
+                // send http request
+                handler.getHttpClient().sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .whenCompleteAsync(this, getThreadPool());
+            } catch (Exception e) {
+                onError();
+            }
+        }
+
     }
 }
