@@ -1094,14 +1094,14 @@ public class SimpleCDNHandler implements RequestHandler {
     // rely on a thread pool in order to .
     private ExecutorService threadPool;
     // used to schedule commands after delay
-    private ScheduledExecutorService timedThreadPoll;
+    private ScheduledExecutorService timedThreadPool;
 
     public ExecutorService getThreadPool() {
         return threadPool;
     }
 
-    public ScheduledExecutorService getTimedThreadPoll() {
-        return timedThreadPoll;
+    public ScheduledExecutorService getTimedThreadPool() {
+        return timedThreadPool;
     }
 
     @Override
@@ -1110,7 +1110,7 @@ public class SimpleCDNHandler implements RequestHandler {
             throw new RuntimeException("Handler already started");
         }
         threadPool = Executors.newCachedThreadPool();
-        timedThreadPoll = Executors.newScheduledThreadPool(1);
+        timedThreadPool = Executors.newScheduledThreadPool(1);
         httpClient = HttpClient.newBuilder()
             .version(java.net.http.HttpClient.Version.HTTP_1_1)
             .followRedirects(Redirect.ALWAYS)
@@ -1160,11 +1160,11 @@ public class SimpleCDNHandler implements RequestHandler {
         // service disruption to clients
         stopClientEndpoints();
 
-        timedThreadPoll.shutdown();
+        timedThreadPool.shutdown();
         threadPool.shutdown();
-        timedThreadPoll.awaitTermination(180, TimeUnit.SECONDS);
+        timedThreadPool.awaitTermination(180, TimeUnit.SECONDS);
         threadPool.awaitTermination(180, TimeUnit.SECONDS);
-        timedThreadPoll = null;
+        timedThreadPool = null;
         threadPool = null;
 
         // TODO Auto-generated method stub
@@ -2051,7 +2051,7 @@ public class SimpleCDNHandler implements RequestHandler {
             watcher.unbind();
         }
         // after 120 seconds, schedule node removal from topology
-        getTimedThreadPoll()
+        getTimedThreadPool()
         .schedule(() -> {
             topology.removeDataNodeDescriptor(peer);
         }, 120, TimeUnit.SECONDS);

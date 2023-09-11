@@ -59,7 +59,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     private SimpleCDNHandler handler;
 
     private ScheduledExecutorService getTimedThreadPool() {
-        return handler.getTimedThreadPoll();
+        return handler.getTimedThreadPool();
     }
 
     private ExecutorService getThreadPool() {
