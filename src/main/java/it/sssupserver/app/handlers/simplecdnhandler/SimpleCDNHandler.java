@@ -97,6 +97,10 @@ public class SimpleCDNHandler implements RequestHandler {
     // identity associated with current replica
     private Identity identity;
 
+    public Identity getIdentity() {
+        return identity;
+    }
+
     // when was this node started
     private Instant startInstant;
 
@@ -951,6 +955,10 @@ public class SimpleCDNHandler implements RequestHandler {
 
     private ManagedFileSystemStatus fsStatus;
 
+    public ManagedFileSystemStatus getFsStatus() {
+        return fsStatus;
+    }
+
     /**
      * Auxiliary class used to periodically check download requests
      * and schedule them
@@ -1064,6 +1072,10 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // executor that will handle all locally-saved files!
     private FileManager executor;
+
+    public FileManager getFileManager() {
+        return executor;
+    }
 
     // handling CDN is complex, so it use
     public SimpleCDNHandler(FileManager executor, List<Map.Entry<String, String>> args) {
@@ -2203,6 +2215,7 @@ public class SimpleCDNHandler implements RequestHandler {
 
     public void scheduleDownload(RemoteFileInfo file, Runnable callback) {
         var downloader = new FileDownloader(
+            this,
             file,
             callback
         );
@@ -2214,224 +2227,4 @@ public class SimpleCDNHandler implements RequestHandler {
         getThreadPool().submit(downloader);
     }
 
-    /**
-     * Auxiliary class used to schedule file downloads
-     */
-    public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,Throwable>,
-        Flow.Subscriber<List<ByteBuffer>>, HttpResponse.BodyHandler<Void> {
-
-        private int errorCounter = 0;
-        private Instant lastError;
-
-        private it.sssupserver.app.base.Path downloadPath;
-        private it.sssupserver.app.base.Path finalPath;
-        private it.sssupserver.app.base.Path dirname;
-
-        /**
-         * Rename file after download
-         */
-        private void renameFileAfterDownload() throws InterruptedException, ExecutionException, Exception {
-            FutureMoveCommand.move(executor, downloadPath, finalPath, identity).get();
-        }
-
-        /**
-         * In case of error during download, remove bad file
-         */
-        private void deleteBadDownload() throws InterruptedException, ExecutionException, Exception {
-            FutureDeleteCommand.delete(executor, downloadPath, identity).get();
-        }
-
-        private RemoteFileInfo fileToDownload;
-        private Runnable onTermination;
-        private List<DataNodeDescriptor> suppliers;
-        public FileDownloader(RemoteFileInfo fileToDownload, Runnable onTermination) {
-            this.fileToDownload = fileToDownload;
-            this.onTermination = onTermination;
-            this.suppliers = fileToDownload.getCandidateSuppliers();
-            // path used for download
-            downloadPath = fileToDownload.getDownloadPath();
-            finalPath = fileToDownload.getEffectivePath();
-            dirname = fileToDownload.getSearchPath().getDirname();
-        }
-
-        private void onError() {
-            ++errorCounter;
-            lastError = Instant.now();
-            // New download attempt
-            if (!suppliers.isEmpty()) {
-                // reschedule
-                SimpleCDNHandler.this.getThreadPool().submit(this);
-            } else {
-                // release lock
-                onTermination.run();
-                failed = false;
-            }
-        }
-
-        /**
-         * Used from Flow.Subscriber
-         */
-        private boolean failed = false;
-        @Override
-        public void accept(HttpResponse<Void> res, Throwable err) {
-            if (failed || err != null || (res != null && res.statusCode() != 200)) {
-                onError();
-            } else {
-                // register new node
-                var newNode = fsStatus.addRegularFileNode(finalPath);
-                newNode.setSize(fileToDownload.getBestVersion().getSize());
-                newNode.setFileHash(fileToDownload.getBestVersion().getHashAlgorithm(), fileToDownload.getBestVersion().getFileHash());
-                // ok, release lock
-                onTermination.run();
-            }
-        }
-
-        /**
-         * Send http request
-         */
-        @Override
-        public void run() {
-            try {
-                // peer candidate supplier
-                var supplier = suppliers.remove(0);
-                // remote endpoint
-                var rem = supplier.getRandomManagementEndpointURL().toURI();
-                // build download request
-                var req = SimpleCDNHandler.this.buildFileDownloadGET(rem, fileToDownload);
-                SimpleCDNHandler.this.getHttpClient()
-                    .sendAsync(req, this)
-                    .whenCompleteAsync(this, SimpleCDNHandler.this.getThreadPool());
-            } catch (URISyntaxException e) {
-                e.printStackTrace();
-                // maybe reschedule
-                onError();
-            }
-        }
-
-        // How to handle bad response
-        //  https://stackoverflow.com/questions/56025114/how-do-i-get-the-status-code-for-a-response-i-subscribe-to-using-the-jdks-httpc
-        // Sample on doc:
-        //  HttpRequest request = HttpRequest.newBuilder()
-        //    .uri(URI.create("http://www.foo.com/"))
-        //    .build();
-        //  BodyHandler<Path> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
-        //    ? BodySubscribers.ofFile(Paths.get("/tmp/f"))
-        //    : c.replacing(Paths.get("/NULL"));
-        //  client.sendAsync(request, bodyHandler)
-        //    .thenApply(HttpResponse::body)
-        //    .thenAccept(System.out::println);
-        // check result
-        @Override
-        public BodySubscriber<Void> apply(ResponseInfo responseInfo) {
-            if (responseInfo.statusCode() == 200) {
-                return BodyHandlers.fromSubscriber(this).apply(responseInfo);
-            } else {
-                return BodyHandlers.discarding().apply(responseInfo);
-            }
-        }
-
-        /**
-         * Handle response
-         */
-        @Override
-        public void onComplete() {
-            // assert checksum is ok
-            if (!checkReceivedData()) {
-                failed = true;
-            } else
-            try {
-                renameFileAfterDownload();
-            } catch (Exception e) {
-                e.printStackTrace();
-                System.exit(1);
-            }
-        }
-
-        /**
-         * Error occurred while parsing response
-         */
-        @Override
-        public void onError(Throwable err) {
-            try {
-                deleteBadDownload();
-                onError();
-            } catch (Exception e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-                System.exit(1);
-            }
-        }
-
-        QueableCommand command;
-
-        @Override
-        public void onNext(List<ByteBuffer> buffers) {
-            for (var buf : buffers) {
-                updateDownloadStats(buf);
-                if (command == null) {
-                    // assert directory creation
-                    try {
-                        FutureMkdirCommand.create(executor, dirname, identity).get();
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        System.exit(1);
-                    }
-                    try {
-                        command = QueableCreateCommand.submit(executor,
-                            downloadPath,
-                            identity,
-                            BufferManager.getFakeWrapper(buf)
-                        );
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        System.exit(1);
-                    }
-                } else {
-                    command = command.enqueue(BufferManager.getFakeWrapper(buf));
-                }
-            }
-        }
-
-        private long receiveSize = 0;
-        private MessageDigest hasher;
-        private void updateDownloadStats(ByteBuffer buffer) {
-            // get size of available data
-            receiveSize += buffer.remaining();
-            // update hash
-            hasher.update(buffer.asReadOnlyBuffer());
-        }
-
-        @Override
-        public void onSubscribe(Subscription sub) {
-            receiveSize = 0;
-            // download started, init checksum fields
-            try {
-                hasher = MessageDigest.getInstance(fileToDownload.getBestVersion().getHashAlgorithm());
-                sub.request(Long.MAX_VALUE);
-            } catch (NoSuchAlgorithmException e) {
-                e.printStackTrace();
-                System.exit(1);
-            }
-        }
-
-        /**
-         * Checksum and file check
-         */
-        private boolean checkReceivedData() {
-            try {
-                if (!command.getFuture().get()) {
-                    return false;
-                } else {
-                    // are size and hash ok?
-                    var v = fileToDownload.getBestVersion();
-                    return v.getSize() == receiveSize
-                        && Arrays.equals(v.getFileHash(), hasher.digest());
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-                return false;
-            }
-        }
-
-    }
 }
