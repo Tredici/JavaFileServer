@@ -35,7 +35,7 @@ public class RemoteFilesWithIdentityGson
         var ans = new RemoteFilesWithIdentityGson();
         var jObj = json.getAsJsonObject();
         ans.identity = context.deserialize(jObj.getAsJsonObject("Identity"), DataNodeDescriptor.class);
-        ans.files = context.deserialize(jObj.getAsJsonArray("SuppliableFiles"), RemoteFileInfo.class);
+        ans.files = context.deserialize(jObj.getAsJsonArray("SuppliableFiles"), RemoteFileInfo[].class);
         return ans;
     }
 
