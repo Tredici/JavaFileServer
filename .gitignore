@@ -4,6 +4,7 @@
 
 # test directory
 file-server/
+server_dir*
 
 # Compiled class file
 **.class
