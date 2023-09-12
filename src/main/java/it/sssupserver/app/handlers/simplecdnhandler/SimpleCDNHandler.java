@@ -265,13 +265,14 @@ public class SimpleCDNHandler implements RequestHandler {
             return true;
         } else {
             var owner = topology.getFileOwner(path);
-            var index = (int)(owner.managerendpoint.length * Math.random());
-            var redirect = owner.managerendpoint[index];
+            var redirect = owner.getRandomManagementEndpointURL();
             try {
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
                 exchange.getResponseHeaders()
-                .add("Location", redirect.toURI().resolve(path).toString());
+                    .add("Location", redirect.toURI()
+                    .resolve(FileManagementHttpHandler.PATH + "/")
+                    .resolve(path).toString());
                 // 308 Permanent Redirect
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
                 exchange.sendResponseHeaders(308, 0);
@@ -292,11 +293,12 @@ public class SimpleCDNHandler implements RequestHandler {
             return true;
         } else {
             var owner = topology.peekRandomSupplier(path);
-            var index = (int)(owner.managerendpoint.length * Math.random());
-            var redirect = owner.managerendpoint[index];
+            var redirect = owner.getRandomManagementEndpointURL();
             try {
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.toURI().resolve(path).toString());
+                    .add("Location", redirect.toURI()
+                    .resolve(FileManagementHttpHandler.PATH + "/")
+                    .resolve(path).toString());
                 exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
@@ -1021,7 +1023,13 @@ public class SimpleCDNHandler implements RequestHandler {
                     var file = downloadRequests.remove(searchPath);
                     // schedule download
                     try {
-                        startDownloadOrDeletion(searchPath, file);
+                        // check if already downloaded in the meantime
+                        if (handler.getFsStatus().isRemoteVersionDownloadable(file)) {
+                            startDownloadOrDeletion(searchPath, file);
+                        } else {
+                            // release lock
+                            locks.remove(searchPath);
+                        }
                     } catch (Exception e) {
                         // prevent livelock
                         locks.remove(searchPath);
@@ -1798,7 +1806,7 @@ public class SimpleCDNHandler implements RequestHandler {
             }
             var dirname = receivedPath.getDirname();
             // is this node owner of the file? Otherwise redirect
-            if (!testOwnershipOrRedirectToManagement(PATH, exchange)) {
+            if (!testOwnershipOrRedirectToManagement(requestedFile, exchange)) {
                 return;
             }
             // get timestamp used to track file
