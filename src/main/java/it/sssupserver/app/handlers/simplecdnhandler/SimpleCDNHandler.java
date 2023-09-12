@@ -46,6 +46,8 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpClient.Redirect;
 import java.net.http.HttpResponse.BodyHandler;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.net.http.HttpResponse.BodySubscriber;
+import java.net.http.HttpResponse.ResponseInfo;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -279,6 +281,9 @@ public class SimpleCDNHandler implements RequestHandler {
 
     public boolean testSupplyabilityOrRedirectToManagement(String path, HttpExchange exchange) {
         if (topology.isFileSupplier(path)) {
+            return true;
+        } else if (path.contains("@")) {
+            // if path contains metadata disable redirection
             return true;
         } else {
             var owner = topology.peekRandomSupplier(path);
@@ -1022,7 +1027,7 @@ public class SimpleCDNHandler implements RequestHandler {
                     var file = downloadRequests.remove(searchPath);
                     // schedule download
                     try {
-                        startDownloadOrDeletion(DEFAULT_CONFIG_FILE, file);
+                        startDownloadOrDeletion(searchPath, file);
                     } catch (Exception e) {
                         // prevent livelock
                         locks.remove(searchPath);
@@ -2381,13 +2386,14 @@ public class SimpleCDNHandler implements RequestHandler {
      * Auxiliary class used to schedule file downloads
      */
     public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,Throwable>,
-        Flow.Subscriber<List<ByteBuffer>> {
+        Flow.Subscriber<List<ByteBuffer>>, HttpResponse.BodyHandler<Void> {
 
         private int errorCounter = 0;
         private Instant lastError;
 
         private it.sssupserver.app.base.Path downloadPath;
         private it.sssupserver.app.base.Path finalPath;
+        private it.sssupserver.app.base.Path dirname;
 
         /**
          * Rename file after download
@@ -2413,6 +2419,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // path used for download
             downloadPath = fileToDownload.getDownloadPath();
             finalPath = fileToDownload.getEffectivePath();
+            dirname = fileToDownload.getSearchPath().getDirname();
         }
 
         private void onError() {
@@ -2459,33 +2466,35 @@ public class SimpleCDNHandler implements RequestHandler {
                 var rem = supplier.getRandomManagementEndpointURL().toURI();
                 // build download request
                 var req = SimpleCDNHandler.this.buildFileDownloadGET(rem, fileToDownload);
-                // TODO: sendAsync
-                // handle response
-                // How to handle bad response
-                //  https://stackoverflow.com/questions/56025114/how-do-i-get-the-status-code-for-a-response-i-subscribe-to-using-the-jdks-httpc
-                // Sample on doc:
-                //  HttpRequest request = HttpRequest.newBuilder()
-                //    .uri(URI.create("http://www.foo.com/"))
-                //    .build();
-                //  BodyHandler<Path> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
-                //    ? BodySubscribers.ofFile(Paths.get("/tmp/f"))
-                //    : c.replacing(Paths.get("/NULL"));
-                //  client.sendAsync(request, bodyHandler)
-                //    .thenApply(HttpResponse::body)
-                //    .thenAccept(System.out::println);
-                // check result
-                BodyHandler<Void> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
-                    // if ok stream
-                    ? BodyHandlers.fromSubscriber(this).apply(rspInfo)
-                    // otherwise discard
-                    : BodyHandlers.discarding().apply(rspInfo);
                 SimpleCDNHandler.this.getHttpClient()
-                    .sendAsync(req,  bodyHandler)
-                    .whenCompleteAsync(this, SimpleCDNHandler.this.getTimedThreadPool());
+                    .sendAsync(req, this)
+                    .whenCompleteAsync(this, SimpleCDNHandler.this.getThreadPool());
             } catch (URISyntaxException e) {
                 e.printStackTrace();
                 // maybe reschedule
                 onError();
+            }
+        }
+
+        // How to handle bad response
+        //  https://stackoverflow.com/questions/56025114/how-do-i-get-the-status-code-for-a-response-i-subscribe-to-using-the-jdks-httpc
+        // Sample on doc:
+        //  HttpRequest request = HttpRequest.newBuilder()
+        //    .uri(URI.create("http://www.foo.com/"))
+        //    .build();
+        //  BodyHandler<Path> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
+        //    ? BodySubscribers.ofFile(Paths.get("/tmp/f"))
+        //    : c.replacing(Paths.get("/NULL"));
+        //  client.sendAsync(request, bodyHandler)
+        //    .thenApply(HttpResponse::body)
+        //    .thenAccept(System.out::println);
+        // check result
+        @Override
+        public BodySubscriber<Void> apply(ResponseInfo responseInfo) {
+            if (responseInfo.statusCode() == 200) {
+                return BodyHandlers.fromSubscriber(this).apply(responseInfo);
+            } else {
+                return BodyHandlers.discarding().apply(responseInfo);
             }
         }
 
@@ -2528,6 +2537,13 @@ public class SimpleCDNHandler implements RequestHandler {
             for (var buf : buffers) {
                 updateDownloadStats(buf);
                 if (command == null) {
+                    // assert directory creation
+                    try {
+                        FutureMkdirCommand.create(executor, dirname, identity).get();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        System.exit(1);
+                    }
                     try {
                         command = QueableCreateCommand.submit(executor,
                             downloadPath,
@@ -2554,11 +2570,12 @@ public class SimpleCDNHandler implements RequestHandler {
         }
 
         @Override
-        public void onSubscribe(Subscription arg0) {
+        public void onSubscribe(Subscription sub) {
             receiveSize = 0;
             // download started, init checksum fields
             try {
                 hasher = MessageDigest.getInstance(fileToDownload.getBestVersion().getHashAlgorithm());
+                sub.request(Long.MAX_VALUE);
             } catch (NoSuchAlgorithmException e) {
                 e.printStackTrace();
                 System.exit(1);
@@ -2576,7 +2593,7 @@ public class SimpleCDNHandler implements RequestHandler {
                     // are size and hash ok?
                     var v = fileToDownload.getBestVersion();
                     return v.getSize() == receiveSize
-                        && v.getFileHash().equals(hasher.digest());
+                        && Arrays.equals(v.getFileHash(), hasher.digest());
                 }
             } catch (Exception e) {
                 e.printStackTrace();
