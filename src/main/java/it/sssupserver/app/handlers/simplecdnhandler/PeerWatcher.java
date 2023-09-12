@@ -331,6 +331,9 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                 PeerWatcher.this.schedule();
                 // inform wrapper
                 handler.decouplePeerFromWatcher(associatedPeer, PeerWatcher.this);
+            } else {
+                // reschedule if error reached
+                schedule();
             }
         }
 
@@ -408,6 +411,8 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                     }
                     // no error
                     errorCounter = 0;
+                    // reschedule
+                    schedule();
                 } catch (Exception e) {
                     onError();
                 }
