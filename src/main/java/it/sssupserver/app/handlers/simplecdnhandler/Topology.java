@@ -1,7 +1,9 @@
 package it.sssupserver.app.handlers.simplecdnhandler;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 import com.google.gson.GsonBuilder;
@@ -69,11 +71,25 @@ public class Topology {
     public DataNodeDescriptor getFileOwner(String path) {
         // get file hash
         var hash = getFileHash(path);
-        var ownerE = datanodes.ceilingEntry(hash);
+        var ownerE = datanodes.floorEntry(hash);
         if (ownerE == null) {
             ownerE = datanodes.lastEntry();
         }
-        return ownerE.getValue();
+        var candidateOwner = ownerE.getValue();
+        // owner must be running!
+        if (candidateOwner.getStatus() != DataNodeDescriptor.Status.RUNNING) {
+            // prevent allocation if not necessary
+            Set<DataNodeDescriptor> loopPrevention = new HashSet<>();
+            do {
+                // loop prevention
+                if (!loopPrevention.add(candidateOwner)) {
+                    return null;
+                }
+                // try previous
+                candidateOwner = findPrevious(candidateOwner);
+            } while (candidateOwner.getStatus() != DataNodeDescriptor.Status.RUNNING);
+        }
+        return candidateOwner;
     }
 
     public List<DataNodeDescriptor> getFileSuppliers(String path) {
@@ -83,14 +99,19 @@ public class Topology {
         final var owner = getFileOwner(path);
         ans.add(owner);
         var supplier = owner;
-        for (int i=1; i<R; ++i) {
+        Set<DataNodeDescriptor> loopPrevention = new HashSet<>(R);
+        while (ans.size() < R) {
             supplier = findPrevious(supplier);
-            if (supplier == null || ans.contains(supplier)) {
+            if (supplier == null || loopPrevention.contains(supplier)) {
                 // avoid looping - this strategy (i.e. check all instead of checking
                 // if owner refound) is ok also in case of concurrent topology changes
                 break;
             }
-            ans.add(supplier);
+            loopPrevention.add(supplier);
+            if (supplier.getStatus() == DataNodeDescriptor.Status.RUNNING) {
+                // only RUNNING nodes can figure as suppliers
+                ans.add(supplier);
+            }
         }
         return ans;
     }
