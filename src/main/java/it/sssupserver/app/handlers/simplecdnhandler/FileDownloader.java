@@ -97,6 +97,12 @@ public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,T
             var newNode = fsStatus.addRegularFileNode(finalPath);
             newNode.setSize(fileToDownload.getBestVersion().getSize());
             newNode.setFileHash(fileToDownload.getBestVersion().getHashAlgorithm(), fileToDownload.getBestVersion().getFileHash());
+            try {
+                var lfi = fsStatus.addLocalFileInfo(newNode);
+            } catch (Exception e) {
+                e.printStackTrace();
+                System.err.println(1);
+            }
             // ok, release lock
             onTermination.run();
         }
