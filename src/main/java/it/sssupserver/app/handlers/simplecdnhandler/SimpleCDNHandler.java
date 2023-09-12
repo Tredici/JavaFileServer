@@ -1529,6 +1529,15 @@ public class SimpleCDNHandler implements RequestHandler {
             sendJson(exchange, conf);
         }
 
+        private void sendFileHash(HttpExchange exchange, String searchPath) throws IOException {
+            if (!isValidPathName(searchPath)) {
+                httpBadRequest(exchange, "Invalid path: " + searchPath);
+            } else {
+                var h = SearchPathWithHashGson.toJson(searchPath, topology.getFileHash(searchPath));
+                sendJson(exchange, h);
+            }
+        }
+
         private void handlePOSThello(HttpExchange exchange) throws IOException {
             try {
                 var is = exchange.getRequestBody();
@@ -1599,6 +1608,9 @@ public class SimpleCDNHandler implements RequestHandler {
                             else if (path.equals("configuration")) {
                                 // return file statistics
                                 sendConfiguration(exchange);
+                            }
+                            else if (path.startsWith("hash/")) {
+                                sendFileHash(exchange, path.substring("hash/".length()));
                             }
                             else {
                                 httpNotFound(exchange);
