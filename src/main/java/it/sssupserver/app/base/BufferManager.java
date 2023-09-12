@@ -24,7 +24,7 @@ public class BufferManager {
     // use direct buffers
     private static boolean default_direct = true;
     private static boolean use_direct = true;
-    
+
     // Command line arguments starting with this prefix
     // are intended as directed to the buffer manager
     private static final String argsPrefix = "--M";
@@ -122,8 +122,8 @@ public class BufferManager {
     private static BlockingQueue<ByteBuffer> bufferQueue = new ArrayBlockingQueue<>(DEFAULT_BUFFER_COUNT);
 
     public static class BufferWrapper implements AutoCloseable {
-        private ByteBuffer buffer;
-        private BufferWrapper(ByteBuffer buffer) {
+        protected ByteBuffer buffer;
+        protected BufferWrapper(ByteBuffer buffer) {
             this.buffer = buffer;
         }
 
@@ -131,18 +131,38 @@ public class BufferManager {
             return this.buffer;
         }
 
-        private boolean closed;
+        protected boolean closed;
         @Override
         public void close() {
             if (!closed) {
                 buffer.clear();
-                bufferQueue.add(buffer);
+                var b = buffer;
+                buffer = null;
+                bufferQueue.add(b);
                 closed = true;
             }
         }
 
         public boolean isClosed() {
             return closed;
+        }
+    }
+
+    /**
+     * Fake wrapper used to supply ByteBuffers
+     * to functions requiring BufferWrapper
+     */
+    private static class FakeWrapper extends BufferWrapper {
+        private FakeWrapper(ByteBuffer buffer) {
+            super(buffer);
+        }
+
+        @Override
+        public void close() {
+            if (!closed) {
+                closed = true;
+                buffer = null;
+            }
         }
     }
 
@@ -167,5 +187,14 @@ public class BufferManager {
                 return new BufferWrapper(bufferQueue.take());
             }
         }
+    }
+
+    /**
+     * Return a wrapper can be safely used as a BufferWrapper
+     * containing a ByteBuffer of unknown origin.
+     * The supplied ByteBuffer is NOT recycled!
+     */
+    public static BufferWrapper getFakeWrapper(ByteBuffer buffer) {
+        return new FakeWrapper(buffer);
     }
 }
