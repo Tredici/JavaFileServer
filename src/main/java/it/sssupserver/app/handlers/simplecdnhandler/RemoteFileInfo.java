@@ -221,7 +221,7 @@ public class RemoteFileInfo {
         boolean deleted) {
         this.searchPath = new Path(searchPath);
         // assert filename match constraints
-        if (FilenameCheckers.isValidPathName(this.searchPath)) {
+        if (!FilenameCheckers.isValidPathName(this.searchPath)) {
             throw new RuntimeException("Invalid path: " + searchPath);
         }
         this.bestVersion = new Version(timestamp, size, hashAlgorithm, hash, deleted);
