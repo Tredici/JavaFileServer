@@ -4,10 +4,12 @@ package it.sssupserver.app.handlers.simplecdnhandler;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.stream.Collectors;
 
 import it.sssupserver.app.base.Path;
 
@@ -210,6 +212,10 @@ public class RemoteFileInfo {
         return this;
     }
 
+    public List<DataNodeDescriptor> getCandidateSuppliers() {
+        return this.getBestVersion().candidateSupplier.values().stream().collect(Collectors.toList());
+    }
+
     public RemoteFileInfo(String searchPath, long size,
         Instant timestamp, String hashAlgorithm, byte[] hash,
         boolean deleted) {
@@ -220,4 +226,36 @@ public class RemoteFileInfo {
         }
         this.bestVersion = new Version(timestamp, size, hashAlgorithm, hash, deleted);
     }
+
+    /**
+     * Return a representation of the metadata associated with
+     * the remote file
+     */
+    public FilenameMetadata getAssociatedMetadata() {
+        var v = getBestVersion();
+        var ans = new FilenameMetadata(this.searchPath.getBasename(), v.getTimestamp(), false, false, v.isDeleted());
+        return ans;
+    }
+
+    /**
+     * Get effective path, i.e. the one including metadata
+     */
+    public Path getEffectivePath() {
+        var m = getAssociatedMetadata();
+        var p = getSearchPath();
+        var ans = p.getDirname().createSubfile(m.toString());
+        return ans;
+    }
+
+    /**
+     * Path for download, i.e. @tmp
+     */
+    public Path getDownloadPath() {
+        var m = getAssociatedMetadata();
+        m.setTemporary(true);
+        var p = getSearchPath();
+        var ans = p.getDirname().createSubfile(m.toString());
+        return ans;
+    }
+
 }
