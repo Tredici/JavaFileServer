@@ -217,7 +217,8 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
 
     private void onStatusUpdate() {
         if (associatedPeer.getStatus() == Status.STOPPING) {
-            // TODO: handle transition to STOPPING
+            // resync might be necessary
+            peerFileWatcher.schedule();
         }
     }
     private void onTopologyUpdate() {
