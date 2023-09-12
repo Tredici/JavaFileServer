@@ -2175,17 +2175,6 @@ public class SimpleCDNHandler implements RequestHandler {
         candidatesById = null;
     }
 
-    /**
-     * Schedule sent of notification for new file upload
-     * Should be called on startup and after /file PUT
-     * @param lfi
-     */
-    public void scheduleNotificationForNewFileUpload(ManagedFileSystemStatus.LocalFileInfo lfi) {
-        // TODO: notify neighbour nodes to ask them starting
-        // replication strategy
-        // TODO: request operation to thread pool
-    }
-
     // ----------------------------------------------------------------
     // Operations associated with control thread ----------------------
     // ----------------------------------------------------------------
