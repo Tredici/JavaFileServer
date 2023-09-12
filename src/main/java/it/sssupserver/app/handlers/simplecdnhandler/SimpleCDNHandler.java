@@ -52,6 +52,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -65,6 +66,8 @@ import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Flow;
+import java.util.concurrent.Flow.Subscription;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -110,11 +113,23 @@ public class SimpleCDNHandler implements RequestHandler {
      * Prevent race condition:
      *  never decrease timestamp
      */
+    private Object topUpdate = new Object(); // do not share locks among independed function
     public Instant updateLastTopologyUpdateTimestamp() {
         var now = Instant.now();
-        synchronized(thisnode) {
+        synchronized(topUpdate) {
             if (thisnode.getLastTopologyUpdate().isBefore(now)) {
                 thisnode.setLastTopologyUpdate(now);
+            }
+        }
+        return now;
+    }
+
+    private Object fileUpdate = new Object();
+    public Instant updateLastFileUpdateTimestamp() {
+        var now = Instant.now();
+        synchronized(fileUpdate) {
+            if (thisnode.getLastFileUpdate().isBefore(now)) {
+                thisnode.setLastFileUpdate(startInstant);
             }
         }
         return now;
@@ -160,7 +175,7 @@ public class SimpleCDNHandler implements RequestHandler {
     private URL[] getManagementEndpoints() {
         return thisnode.managerendpoint;
     }
-    
+
     // hold topology seen by this node
     private Topology topology;
     /**
@@ -171,7 +186,7 @@ public class SimpleCDNHandler implements RequestHandler {
     public List<DataNodeDescriptor> getNeighboours() {
         return topology.getNeighboours(thisnode, thisnode.getReplicationFactor());
     }
-    
+
     // find previous of the current node,
     // return null if current node is alone
     // (i.e. it is its own successor)
@@ -969,7 +984,7 @@ public class SimpleCDNHandler implements RequestHandler {
          * downloaded.
          */
         private final ConcurrentMap<String, RemoteFileInfo> downloadRequests = new ConcurrentSkipListMap<>();
-        
+
         // used to prevent mixing
         private ConcurrentSkipListSet<String> locks = new ConcurrentSkipListSet<>();
 
@@ -991,8 +1006,8 @@ public class SimpleCDNHandler implements RequestHandler {
                 // release lock
                 locks.remove(searchPath);
             } else {
-                // schedule query and response
-                // TODO: handle deletion
+                // schedule download
+                handler.scheduleDownload(file, () -> locks.remove(searchPath));
             }
         }
 
@@ -1658,6 +1673,17 @@ public class SimpleCDNHandler implements RequestHandler {
         return req;
     }
 
+    public HttpRequest buildFileDownloadGET(URI uri, RemoteFileInfo remote) {
+        var searchPath = remote.getEffectivePath().toString();
+        var rUri = uri
+            .resolve(FileManagementHttpHandler.PATH + "/")
+            .resolve(searchPath);
+        var req = HttpRequest.newBuilder(rUri)
+            .GET()
+            .build();
+        return req;
+    }
+
     // listen for PUT and DELETE commands
     private class FileManagementHttpHandler implements HttpHandler {
         public static final String PATH = "/file";
@@ -1815,14 +1841,14 @@ public class SimpleCDNHandler implements RequestHandler {
                 var success = queable.getFuture().get();
                 if (!success) {
                     // delete temporary file
-                    FutureDeleteCommand.delete(executor, temporaryFilename, identity);
+                    FutureDeleteCommand.delete(executor, temporaryFilename, identity).get();
                     throw new RuntimeException("Error while creating file: " + temporaryFilename);
                 }
             }
             // rename file with final name - i.e. remove "@tmp"
             metadata.setTemporary(false);
             var finalName = dirname.createSubfile(metadata.toString());
-            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity);
+            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity).get();
             // add save new reference to file as available
             var newNode = fsStatus.addRegularFileNode(finalName);
             // Compute size
@@ -1832,8 +1858,8 @@ public class SimpleCDNHandler implements RequestHandler {
             // TODO: delete possible old versions
             // send 201 CREATED
             httpCreated(exchange, "File saved as: " + finalName);
-            // Notify new file upload to neighbours inside the topology
-            scheduleNotificationForNewFileUpload(lfi);
+            // Local files updated!
+            updateLastFileUpdateTimestamp();
         }
 
         private void handleDELETE(HttpExchange exchange) throws Exception {
@@ -1864,6 +1890,8 @@ public class SimpleCDNHandler implements RequestHandler {
             candidateVersion.markAsDeleted();
             // confirm deletion
             httpOk(exchange, "Deleted file: " + searchPath);
+            // Local files updated!
+            updateLastFileUpdateTimestamp();
         }
 
         @Override
@@ -2034,7 +2062,7 @@ public class SimpleCDNHandler implements RequestHandler {
                     // same instance?
                     if (peer.describeSameInstance(v.getAssociatedPeer())) {
                         // is this case do nothing
-                        return v;                        
+                        return v;
                     } else {
                         // disable previous
                         v.unbind();
@@ -2151,7 +2179,7 @@ public class SimpleCDNHandler implements RequestHandler {
         if (remoteNode == null) {
             throw new RuntimeException("No node with id " + nodeId + " found");
         }
-        // get management endpoint 
+        // get management endpoint
         var mep = remoteNode.getRandomManagementEndpointURL();
         return mep;
     }
@@ -2169,7 +2197,7 @@ public class SimpleCDNHandler implements RequestHandler {
         if (nodeId == thisnode.id) {
             throw new RuntimeException("Cannot download from itself");
         }
-        // get management endpoint 
+        // get management endpoint
         var me = getRemoteManagementEndpointByNodeId(nodeId);
         // build request URI
         var rUri = me.toURI().resolve(FileManagementHttpHandler.PATH + "/").resolve(searchPath);
@@ -2322,5 +2350,227 @@ public class SimpleCDNHandler implements RequestHandler {
             + ":" + size
             + ":" + hashAlgorithm
             + ":" + bytesToHex(fileHash);
+    }
+
+    public void scheduleDownload(RemoteFileInfo file, Runnable callback) {
+        var downloader = new FileDownloader(
+            file,
+            callback
+        );
+        scheduleDownload(downloader);
+    }
+
+    protected void scheduleDownload(FileDownloader downloader) {
+        // schedule download
+        getThreadPool().submit(downloader);
+    }
+
+    /**
+     * Auxiliary class used to schedule file downloads
+     */
+    public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,Throwable>,
+        Flow.Subscriber<List<ByteBuffer>> {
+
+        private int errorCounter = 0;
+        private Instant lastError;
+
+        private it.sssupserver.app.base.Path downloadPath;
+        private it.sssupserver.app.base.Path finalPath;
+
+        /**
+         * Rename file after download
+         */
+        private void renameFileAfterDownload() throws InterruptedException, ExecutionException, Exception {
+            FutureMoveCommand.move(executor, downloadPath, finalPath, identity).get();
+        }
+
+        /**
+         * In case of error during download, remove bad file
+         */
+        private void deleteBadDownload() throws InterruptedException, ExecutionException, Exception {
+            FutureDeleteCommand.delete(executor, downloadPath, identity).get();
+        }
+
+        private RemoteFileInfo fileToDownload;
+        private Runnable onTermination;
+        private List<DataNodeDescriptor> suppliers;
+        public FileDownloader(RemoteFileInfo fileToDownload, Runnable onTermination) {
+            this.fileToDownload = fileToDownload;
+            this.onTermination = onTermination;
+            this.suppliers = fileToDownload.getCandidateSuppliers();
+            // path used for download
+            downloadPath = fileToDownload.getDownloadPath();
+            finalPath = fileToDownload.getEffectivePath();
+        }
+
+        private void onError() {
+            ++errorCounter;
+            lastError = Instant.now();
+            // New download attempt
+            if (!suppliers.isEmpty()) {
+                // reschedule
+                SimpleCDNHandler.this.getThreadPool().submit(this);
+            } else {
+                // release lock
+                onTermination.run();
+                failed = false;
+            }
+        }
+
+        /**
+         * Used from Flow.Subscriber
+         */
+        private boolean failed = false;
+        @Override
+        public void accept(HttpResponse<Void> res, Throwable err) {
+            if (failed || err != null || (res != null && res.statusCode() != 200)) {
+                onError();
+            } else {
+                // register new node
+                var newNode = fsStatus.addRegularFileNode(finalPath);
+                newNode.setSize(fileToDownload.getBestVersion().getSize());
+                newNode.setFileHash(fileToDownload.getBestVersion().getHashAlgorithm(), fileToDownload.getBestVersion().getFileHash());
+                // ok, release lock
+                onTermination.run();
+            }
+        }
+
+        /**
+         * Send http request
+         */
+        @Override
+        public void run() {
+            try {
+                // peer candidate supplier
+                var supplier = suppliers.remove(0);
+                // remote endpoint
+                var rem = supplier.getRandomManagementEndpointURL().toURI();
+                // build download request
+                var req = SimpleCDNHandler.this.buildFileDownloadGET(rem, fileToDownload);
+                // TODO: sendAsync
+                // handle response
+                // How to handle bad response
+                //  https://stackoverflow.com/questions/56025114/how-do-i-get-the-status-code-for-a-response-i-subscribe-to-using-the-jdks-httpc
+                // Sample on doc:
+                //  HttpRequest request = HttpRequest.newBuilder()
+                //    .uri(URI.create("http://www.foo.com/"))
+                //    .build();
+                //  BodyHandler<Path> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
+                //    ? BodySubscribers.ofFile(Paths.get("/tmp/f"))
+                //    : c.replacing(Paths.get("/NULL"));
+                //  client.sendAsync(request, bodyHandler)
+                //    .thenApply(HttpResponse::body)
+                //    .thenAccept(System.out::println);
+                // check result
+                BodyHandler<Void> bodyHandler = (rspInfo) -> rspInfo.statusCode() == 200
+                    // if ok stream
+                    ? BodyHandlers.fromSubscriber(this).apply(rspInfo)
+                    // otherwise discard
+                    : BodyHandlers.discarding().apply(rspInfo);
+                SimpleCDNHandler.this.getHttpClient()
+                    .sendAsync(req,  bodyHandler)
+                    .whenCompleteAsync(this, SimpleCDNHandler.this.getTimedThreadPool());
+            } catch (URISyntaxException e) {
+                e.printStackTrace();
+                // maybe reschedule
+                onError();
+            }
+        }
+
+        /**
+         * Handle response
+         */
+        @Override
+        public void onComplete() {
+            // assert checksum is ok
+            if (!checkReceivedData()) {
+                failed = true;
+            } else
+            try {
+                renameFileAfterDownload();
+            } catch (Exception e) {
+                e.printStackTrace();
+                System.exit(1);
+            }
+        }
+
+        /**
+         * Error occurred while parsing response
+         */
+        @Override
+        public void onError(Throwable err) {
+            try {
+                deleteBadDownload();
+                onError();
+            } catch (Exception e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+                System.exit(1);
+            }
+        }
+
+        QueableCommand command;
+
+        @Override
+        public void onNext(List<ByteBuffer> buffers) {
+            for (var buf : buffers) {
+                updateDownloadStats(buf);
+                if (command == null) {
+                    try {
+                        command = QueableCreateCommand.submit(executor,
+                            downloadPath,
+                            identity,
+                            BufferManager.getFakeWrapper(buf)
+                        );
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        System.exit(1);
+                    }
+                } else {
+                    command = command.enqueue(BufferManager.getFakeWrapper(buf));
+                }
+            }
+        }
+
+        private long receiveSize = 0;
+        private MessageDigest hasher;
+        private void updateDownloadStats(ByteBuffer buffer) {
+            // get size of available data
+            receiveSize += buffer.remaining();
+            // update hash
+            hasher.update(buffer.asReadOnlyBuffer());
+        }
+
+        @Override
+        public void onSubscribe(Subscription arg0) {
+            receiveSize = 0;
+            // download started, init checksum fields
+            try {
+                hasher = MessageDigest.getInstance(fileToDownload.getBestVersion().getHashAlgorithm());
+            } catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+                System.exit(1);
+            }
+        }
+
+        /**
+         * Checksum and file check
+         */
+        private boolean checkReceivedData() {
+            try {
+                if (!command.getFuture().get()) {
+                    return false;
+                } else {
+                    // are size and hash ok?
+                    var v = fileToDownload.getBestVersion();
+                    return v.getSize() == receiveSize
+                        && v.getFileHash().equals(hasher.digest());
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                return false;
+            }
+        }
+
     }
 }
