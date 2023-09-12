@@ -2126,6 +2126,10 @@ public class SimpleCDNHandler implements RequestHandler {
      * @throws URISyntaxException
      */
     public void decouplePeerFromWatcher(DataNodeDescriptor peer, PeerWatcher watcher) {
+        if (peer == null) {
+            // prevent unexpected race condition
+            return;
+        }
         var w = candidatesById.compute(peer.getId(), (k, v) -> {
             if (watcher == v) {
                 return null;
