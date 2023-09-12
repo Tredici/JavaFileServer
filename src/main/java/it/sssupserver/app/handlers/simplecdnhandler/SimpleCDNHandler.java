@@ -1186,6 +1186,12 @@ public class SimpleCDNHandler implements RequestHandler {
         if (threadPool == null) {
             throw new RuntimeException("Handler not started.");
         }
+        var stopInstant = Instant.now();
+        thisnode.setStatus(DataNodeDescriptor.Status.STOPPING);
+        thisnode.setLastStatusChange(stopInstant);
+
+        // Give enough time to peers to discover status change
+        Thread.sleep(30 * 1000);
 
         // start exit protocol
         // shutdown manager endpoint
@@ -1204,10 +1210,13 @@ public class SimpleCDNHandler implements RequestHandler {
 
         timedThreadPool.shutdown();
         threadPool.shutdown();
-        timedThreadPool.awaitTermination(180, TimeUnit.SECONDS);
-        threadPool.awaitTermination(180, TimeUnit.SECONDS);
+        timedThreadPool.awaitTermination(30, TimeUnit.SECONDS);
+        threadPool.awaitTermination(30, TimeUnit.SECONDS);
         timedThreadPool = null;
         threadPool = null;
+
+        thisnode.setStatus(DataNodeDescriptor.Status.SHUTDOWN);
+        thisnode.setLastStatusChange(Instant.now());
 
         // TODO Auto-generated method stub
         //throw new UnsupportedOperationException("Unimplemented method 'stop'");
