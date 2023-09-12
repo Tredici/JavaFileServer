@@ -221,13 +221,13 @@ public class SimpleCDNHandler implements RequestHandler {
             var index = (int)(owner.dataendpoints.length * Math.random());
             var redirect = owner.dataendpoints[index];
             try {
-                // 308 Permanent Redirect
-                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-                exchange.sendResponseHeaders(404, 0);
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
                 exchange.getResponseHeaders()
                     .add("Location", redirect.toURI().resolve(path).toString());
+                // 308 Permanent Redirect
+                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
+                exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -244,12 +244,13 @@ public class SimpleCDNHandler implements RequestHandler {
             return true;
         } else {
             var owner = topology.peekRandomSupplier(path);
-            var index = (int)(owner.dataendpoints.length * Math.random());
-            var redirect = owner.dataendpoints[index];
+            var redirect = owner.getRandomDataEndpointURL();
             try {
-                exchange.sendResponseHeaders(404, 0);
+                // 308 Permanent Redirect
+                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections
                 exchange.getResponseHeaders()
                     .add("Location", redirect.toURI().resolve(path).toString());
+                exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -267,13 +268,13 @@ public class SimpleCDNHandler implements RequestHandler {
             var index = (int)(owner.managerendpoint.length * Math.random());
             var redirect = owner.managerendpoint[index];
             try {
-                // 308 Permanent Redirect
-                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-                exchange.sendResponseHeaders(404, 0);
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.toURI().resolve(path).toString());
+                .add("Location", redirect.toURI().resolve(path).toString());
+                // 308 Permanent Redirect
+                //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
+                exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -294,9 +295,9 @@ public class SimpleCDNHandler implements RequestHandler {
             var index = (int)(owner.managerendpoint.length * Math.random());
             var redirect = owner.managerendpoint[index];
             try {
-                exchange.sendResponseHeaders(404, 0);
                 exchange.getResponseHeaders()
                     .add("Location", redirect.toURI().resolve(path).toString());
+                exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
@@ -483,7 +484,7 @@ public class SimpleCDNHandler implements RequestHandler {
                             // schedule creation of file
                             var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
                             if (cc.getFuture().get() != true) {
-                                throw new RuntimeException("Failed to delete file: " + searchPath);
+                                throw new RuntimeException("Failed to create file: " + searchPath);
                             }
                         }
                         // delete original one
@@ -712,15 +713,18 @@ public class SimpleCDNHandler implements RequestHandler {
                 // file name
                 var dstPath = deleted.getSearchPath().getDirname()
                     .createSubfile(metadata.toString());
+                // enforce directory creation
+                FutureMkdirCommand.create(executor, dstPath.getDirname(), identity).get();
                 // schedule creation of file
                 var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
                 if (cc.getFuture().get() != true) {
-                    throw new RuntimeException("Failed to delete file: " + searchPath);
+                    throw new RuntimeException("Failed to add deleted file: " + searchPath);
                 }
                 // add new node
                 var newNode = addRegularFileNode(dstPath);
                 newNode.setSize(deleted.getBestVersion().getSize());
                 newNode.setFileHash(deleted.getBestVersion().getHashAlgorithm(), deleted.getBestVersion().getFileHash());
+                var lfi = fsStatus.addLocalFileInfo(newNode);
             } else if (last.isRemoteNewer(deleted)) {
                 last.markAsDeleted();
             }
