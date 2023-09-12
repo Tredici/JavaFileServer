@@ -303,24 +303,6 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     /**
-     * Called when an update is received from a node already
-     * known
-     */
-    public void handleRemoteNodeUpdate(DataNodeDescriptor node) {
-        var ts = Instant.now();
-    }
-
-    /**
-     * To be called when the node with the specified id
-     * leave the topology.
-     */
-    public void handleRemoteNodeExit(long id) {
-        // remove node from topology
-        // check R-1 predecessor for resync
-        // TODO: complete
-    }
-
-    /**
      * This class maintains a view of the files
      * managed by this DataNode.
      * It should be re-initialized every time this
@@ -2196,13 +2178,6 @@ public class SimpleCDNHandler implements RequestHandler {
     // Operations associated with control thread ----------------------
     // ----------------------------------------------------------------
 
-    // schedule read command to obtain file content and
-    // send it to remote node
-    private Future sendFileToDataNode(URI remoteDataNode, Path file) {
-
-        return null;
-    }
-
     public URL getRemoteManagementEndpointByNodeId(long nodeId) {
         // get reference to remote node
         var remoteNode = topology.searchDataNodeDescriptorById(nodeId);
@@ -2212,162 +2187,6 @@ public class SimpleCDNHandler implements RequestHandler {
         // get management endpoint
         var mep = remoteNode.getRandomManagementEndpointURL();
         return mep;
-    }
-
-    /**
-     * send a GET /file/path/to/file request to a remote node to download it
-     * and store locally
-     * @throws URISyntaxException
-     * @throws InterruptedException
-     * @throws IOException
-     */
-    private boolean downloadFileFromDatanode(String searchPath, long nodeId) throws URISyntaxException, IOException, InterruptedException {
-        var filePath = new it.sssupserver.app.base.Path(searchPath);
-        var dirname = filePath.getDirname();
-        if (nodeId == thisnode.id) {
-            throw new RuntimeException("Cannot download from itself");
-        }
-        // get management endpoint
-        var me = getRemoteManagementEndpointByNodeId(nodeId);
-        // build request URI
-        var rUri = me.toURI().resolve(FileManagementHttpHandler.PATH + "/").resolve(searchPath);
-        // check if local version exists
-        var version = fsStatus.getLastSuppliableVersion(searchPath);
-        // Build request
-        var reqB = HttpRequest.newBuilder()
-            .GET()
-            .uri(rUri);
-        if (version != null) {
-            reqB = reqB.header("ETag", version.generateHttpETagHeader());
-        }
-        var req = reqB.build();
-        var res = httpClient.send(req, BodyHandlers.ofInputStream());
-        var is = res.body();
-        switch (res.statusCode()) {
-            case 200:
-                // store file locally
-                {
-                    ETagParser receivedETag;
-                    try {
-                        // check received ETag
-                        var receivedETagHeader = res.headers().firstValue("ETag").get();
-                        receivedETag = new ETagParser(receivedETagHeader);
-                        var metadata = new FilenameMetadata(filePath.getBasename(),
-                            receivedETag.getTimestamp(), false, true, false);
-                        // check coerence with file dimension
-                        var contentLength = Long.parseLong(res.headers().firstValue("Content-Length").get());
-                        if (contentLength != receivedETag.getSize()) {
-                            throw new RuntimeException("ETag file size is " + receivedETag.getSize()
-                                + " but Content-Lenght is " + contentLength);
-                        }
-                        // is file hash known?
-                        var ha = receivedETag.getHashAlgorithm();
-                        if (!Arrays.stream(FileReducerCommand.getAvailableHashAlgorithms())
-                            .anyMatch(ha::equals)) {
-                            throw new RuntimeException("Bad ETag (unknown hash): " + receivedETag);
-                        }
-                        // create hasher for content check
-                        var md = MessageDigest.getInstance(ha);
-                        // path to save temporary file during download
-                        var temporaryFilename = dirname.createSubfile(metadata.toString());
-                        // create directory
-                        FutureMkdirCommand.create(executor, dirname, identity).get();
-                        // download file piece by piece
-                        {
-                            var bfsz = BufferManager.getBufferSize();
-                            var tmp = new byte[bfsz];
-                            BufferWrapper bufWrapper;
-                            int len;
-                            java.nio.ByteBuffer buf;
-                            long receivedFileSize = 0;
-
-                            bufWrapper = BufferManager.getBuffer();
-                            buf = bufWrapper.get();
-                            // read until data availables or buffer filled
-                            while (contentLength > 0 && buf.hasRemaining()) {
-                                len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
-                                if (len == -1) {
-                                    break;
-                                }
-                                contentLength -= len;
-                                receivedFileSize += len;
-                                md.update(tmp, 0, len);
-                                buf.put(tmp, 0, len);
-                            }
-                            buf.flip();
-                            // create file locally and start storing it
-                            QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
-                            // store file piece by piece
-                            while (contentLength > 0) {
-                                // take a new buffer
-                                bufWrapper = BufferManager.getBuffer();
-                                buf = bufWrapper.get();
-                                // fill this buffer
-                                while (contentLength > 0 && buf.hasRemaining()) {
-                                    len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
-                                    if (len == -1) {
-                                        break;
-                                    }
-                                    contentLength -= len;
-                                    receivedFileSize += len;
-                                    md.update(tmp, 0, len);
-                                    buf.put(tmp, 0, len);
-                                }
-                                buf.flip();
-                                // append new
-                                queable.enqueue(bufWrapper);
-                            }
-                            // wait for completion
-                            var success = queable.getFuture().get();
-                            if (!success) {
-                                // delete temporary file
-                                FutureDeleteCommand.delete(executor, temporaryFilename, identity);
-                                throw new RuntimeException("Error while creating file: " + temporaryFilename);
-                            }
-                            // rename file with final name - i.e. remove "@tmp"
-                            metadata.setTemporary(false);
-                            var finalName = dirname.createSubfile(metadata.toString());
-                            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity);
-                            // add save new reference to file as available
-                            var newNode = fsStatus.addRegularFileNode(finalName);
-                            // Compute size
-                            newNode.setSize(receivedFileSize);
-                            newNode.setFileHash(md.getAlgorithm(), md.digest());
-                            var lfi = fsStatus.addLocalFileInfo(newNode);
-                            is.close();
-                            return true;
-                        }
-                    } catch (Exception e) {
-                        is.close();
-                    }
-                }
-                break;
-            case 410:
-                // handle deleted file
-                {
-                    ;
-                }
-                break;
-            default:
-                break;
-        }
-        return false;
-    }
-
-    private void downloadLocalStorageInfoWithIdentityFromRemoteDatanode(long nodeId) throws URISyntaxException, IOException, InterruptedException {
-        var me = getRemoteManagementEndpointByNodeId(nodeId);
-        // request uri
-        var rUri = me.toURI().resolve(ApiManagementHttpHandler.PATH + "/").resolve("suppliables");
-        // build http request
-        var req = HttpRequest.newBuilder(rUri)
-            .GET()
-            .timeout(httpRequestTimeout)
-            .build();
-        var res = httpClient.send(req, BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (res.statusCode() != 200) {
-            // bad result
-            return;
-        }
     }
 
     public static String generateHttpETagHeader(
