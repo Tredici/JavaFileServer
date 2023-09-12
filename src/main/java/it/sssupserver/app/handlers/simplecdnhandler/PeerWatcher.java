@@ -7,6 +7,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -46,6 +47,10 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     public static final long TOPOLOGY_DELAY = 3;
     // FileWatcher parameter
     public static final long FILE_WATCHER_DELAY = 1;
+    // It is possible, in case of byzantine failures, that file
+    // updates are not synchonized with TS update, so ensure
+    // files are checked if enough time passes with no check
+    public static final long FILE_WATCHER_INACTIVY_LIMIT = 90;
 
     // After ERROR_LIMIT consecutive errors, trigger deletion
     public static final int ERROR_LIMIT = 3;
@@ -238,7 +243,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     public synchronized void checkForStatusUpdate(DataNodeDescriptor info) {
         var ap = associatedPeer;
         if (ap == null) {
-            // 
+            //
             return;
         }
         // by semplicity
@@ -266,12 +271,25 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
     public void bind(DataNodeDescriptor descriptor) {
         associatedPeer = descriptor;
         peerKeepAliver.start();
+        // at the beginning, always schedule file check
+        peerFileWatcher.schedule();
     }
-    
+
     public DataNodeDescriptor unbind() {
         var ans = associatedPeer;
         associatedPeer = null;
         return ans;
+    }
+
+    // peridically, enforce file check (in case of unexpected error in ts update)
+    private void suggestFileCheck() {
+        var now = Instant.now();
+        var wasLongAgo = peerFileWatcher.getLastRun()
+            .plus(FILE_WATCHER_INACTIVY_LIMIT, ChronoUnit.SECONDS)
+            .isBefore(now);
+        if (wasLongAgo) {
+            peerFileWatcher.schedule();
+        }
     }
 
     /**
@@ -384,6 +402,8 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                     } else {
                         // should check all possible status updates
                         PeerWatcher.this.checkForStatusUpdate(identity);
+                        // in case of unexpected errors in TS update...
+                        suggestFileCheck();
                     }
                     // no error
                     errorCounter = 0;
@@ -409,7 +429,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                 var req = handler.buildApiHelloPOST(rUri);
                 // send http request
                 handler.getHttpClient().sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
-                .whenCompleteAsync(this, getThreadPool());                
+                .whenCompleteAsync(this, getThreadPool());
             } catch (Exception e) {
                 onError();
             }
@@ -446,7 +466,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                     // check if identity available
                     if (data.getIdentity() != null && handler.isDataNodeCompatible(data.getIdentity())) {
                         // report list of possible new peers
-                        handler.possiblePeers(data.getSnapshot());                        
+                        handler.possiblePeers(data.getSnapshot());
                         // reset error counter
                         errorCounter.set(0);
                     }
@@ -471,7 +491,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                 var req = handler.buildApiHelloPOST(rUri);
                 // send http request
                 handler.getHttpClient().sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
-                .whenCompleteAsync(this, getThreadPool());                
+                .whenCompleteAsync(this, getThreadPool());
             } catch (Exception e) {
                 onError();
             }
@@ -504,6 +524,11 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
      * GET /api/suppliables
      */
     private class FileWatcher implements Runnable, BiConsumer<HttpResponse<String>,Throwable> {
+        private Instant lastRun;
+
+        public Instant getLastRun() {
+            return lastRun;
+        }
 
         private AtomicInteger errorCounter = new AtomicInteger();
         private Instant lastError;
@@ -584,6 +609,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                 return;
             }
             try {
+                lastRun = Instant.now();
                 var rUri = ap.getRandomManagementEndpointURL().toURI();
                 var req = handler.buildApiSuppliablesGET(rUri);
                 // send http request
