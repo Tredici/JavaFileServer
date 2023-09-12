@@ -749,7 +749,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var filePath = node.getPath();
             var basename = filePath.getBasename();
             var dirname = filePath.getDirname();
-            // extract metadata
+            // extract metadata 
             var metadata = new FilenameMetadata(basename);
             // extract search path
             var searchPath = dirname.createSubfile(metadata.getSimpleName());
@@ -1794,6 +1794,10 @@ public class SimpleCDNHandler implements RequestHandler {
                     // extract medatada
                     metadata = new FilenameMetadata(receivedPath.getBasename());
                     if (metadata.holdMetadata() || requestedFile.contains("@")) {
+                        badPath = true;
+                    }
+                    // assert it match file path
+                    if (!isValidPathName(receivedPath)) {
                         badPath = true;
                     }
                 } catch (Exception e) {
