@@ -1310,49 +1310,6 @@ public class SimpleCDNHandler implements RequestHandler {
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with client endpoints ++++++++++++++++++++
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    class ClientHttpHandler implements HttpHandler {
-        public static final String PATH = "/";
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            try {
-                switch (exchange.getRequestMethod()) {
-                    case "GET":
-                        var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
-                        // check if current node is file supplier or redirect
-                        if (SimpleCDNHandler.this.testSupplyabilityOrRedirect(requestedFile, exchange)) {
-                            // prevent clients from directly accessing local files
-                            var truePath = fsStatus.findTruePath(requestedFile);
-                            if (truePath == null) {
-                                // return 404
-                                httpNotFound(exchange);
-                                SimpleCDNHandler.this.incrementNotFoundCount(requestedFile);
-                            } else {
-                                try {
-                                    // Try to detect MIME type
-                                    var mime = estimateMimeType(requestedFile);
-                                    var headers = Collections.singletonMap("Content-Type", mime);
-                                    // recicle old working code
-                                    HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity, truePath, headers);
-                                    SimpleCDNHandler.this.incrementDownloadCount(requestedFile);
-                                } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
-                            }
-                        } else {
-                            // one more redirect
-                            SimpleCDNHandler.this.incrementRedirectCount(requestedFile);
-                        }
-                        break;
-                    default:
-                        httpMethodNotAllowed(exchange);
-                        break;
-                }
-            } catch (Exception e) {
-                httpInternalServerError(exchange);
-                System.err.println(e);
-                e.printStackTrace();
-            }
-        }
-    }
 
     // flag for client request handling
     private boolean clientStarted = false;
@@ -1390,7 +1347,7 @@ public class SimpleCDNHandler implements RequestHandler {
         for (var addr : clientAddresses) {
             var hs = HttpServer.create(addr, BACKLOG);
             // Add http handler for clients
-            hs.createContext("/", new ClientHttpHandler());
+            hs.createContext("/", new ClientHttpHandler(this));
             clientHttpServers.add(hs);
             hs.setExecutor(threadPool);
             hs.start();
