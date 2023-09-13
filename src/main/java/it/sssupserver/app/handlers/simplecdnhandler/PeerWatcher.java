@@ -622,6 +622,7 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
                 handler.getHttpClient().sendAsync(req, BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .whenCompleteAsync(this, getThreadPool());
             } catch (Exception e) {
+                e.printStackTrace();
                 onError();
             }
         }
