@@ -123,7 +123,7 @@ public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,T
             handler.getHttpClient()
                 .sendAsync(req, this)
                 .whenCompleteAsync(this, handler.getThreadPool());
-        } catch (URISyntaxException e) {
+        } catch (Exception e) {
             e.printStackTrace();
             // maybe reschedule
             onError();
