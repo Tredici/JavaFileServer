@@ -38,7 +38,11 @@ public class ClientHttpHandler implements HttpHandler {
                                 var mime = handler.estimateMimeType(requestedFile);
                                 var headers = Collections.singletonMap("Content-Type", mime);
                                 // recicle old working code
-                                HttpSchedulableReadCommand.handle(handler.getFileManager(), exchange, handler.getIdentity(), truePath, headers);
+                                HttpSchedulableReadCommand.handle(handler.getFileManager(), 
+                                    exchange,
+                                    handler.getIdentity(),
+                                    SimpleCDNHandler.sanitazePath(truePath),
+                                    headers);
                                 handler.incrementDownloadCount(requestedFile);
                             } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
                         }

@@ -10,11 +10,11 @@ public class FilenameCheckers {
     private static Predicate<String> regularFileNameTest;
     static {
         directoryNameTest = Pattern.compile(
-            "^(_|-|\\+|\\w)(\\s*(_|-|\\+|\\w|\\(|\\))+)*$",
+            "^(_|-|\\+|\\w)(\\s*(_|-|\\+|\\w|\\(|\\))+)*(\\.(_|-|\\+|\\w|\\(|\\))+)*$",
             Pattern.CASE_INSENSITIVE
         ).asMatchPredicate();
         regularFileNameTest = Pattern.compile(
-            "^(_|-|\\+|\\w)(\\s*(_|-|\\+|\\w|\\(|\\))+)*(\\.(_|-|\\+|\\w|\\(|\\))+)+$",
+            "^(_|-|\\+|\\w)(\\s*(_|-|\\+|\\w|\\(|\\))+)*(\\.(_|-|\\+|\\w|\\(|\\))+)*$",
             Pattern.CASE_INSENSITIVE
         ).asMatchPredicate();
     }

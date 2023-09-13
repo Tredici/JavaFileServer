@@ -44,14 +44,19 @@ public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,T
      * Rename file after download
      */
     private void renameFileAfterDownload() throws InterruptedException, ExecutionException, Exception {
-        FutureMoveCommand.move(handler.getFileManager(), downloadPath, finalPath, handler.getIdentity()).get();
+        FutureMoveCommand.move(handler.getFileManager(),
+            SimpleCDNHandler.sanitazePath(downloadPath),
+            SimpleCDNHandler.sanitazePath(finalPath),
+            handler.getIdentity()).get();
     }
 
     /**
      * In case of error during download, remove bad file
      */
     private void deleteBadDownload() throws InterruptedException, ExecutionException, Exception {
-        FutureDeleteCommand.delete(handler.getFileManager(), downloadPath, handler.getIdentity()).get();
+        FutureDeleteCommand.delete(handler.getFileManager(),
+            SimpleCDNHandler.sanitazePath(downloadPath),
+            handler.getIdentity()).get();
     }
 
     private SimpleCDNHandler handler;
@@ -193,14 +198,16 @@ public class FileDownloader implements Runnable, BiConsumer<HttpResponse<Void>,T
             if (command == null) {
                 // assert directory creation
                 try {
-                    FutureMkdirCommand.create(handler.getFileManager(), dirname, handler.getIdentity()).get();
+                    FutureMkdirCommand.create(handler.getFileManager(),
+                        SimpleCDNHandler.sanitazePath(dirname),
+                        handler.getIdentity()).get();
                 } catch (Exception e) {
                     e.printStackTrace();
                     System.exit(1);
                 }
                 try {
                     command = QueableCreateCommand.submit(handler.getFileManager(),
-                        downloadPath,
+                        SimpleCDNHandler.sanitazePath(downloadPath),
                         handler.getIdentity(),
                         BufferManager.getFakeWrapper(buf)
                     );

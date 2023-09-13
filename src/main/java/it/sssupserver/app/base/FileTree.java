@@ -82,6 +82,11 @@ public class FileTree {
             return path;
         }
 
+        // USE WITH CAUTION!
+        public void setPath(Path path) {
+            this.path = path;
+        }
+
         /**
          * Check new name is valid and change if only if
          * it change only the basename.

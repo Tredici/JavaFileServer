@@ -100,6 +100,51 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     /**
+     * Directories cannot contains '.' (dot), substitute them with '#'
+     */
+    public static it.sssupserver.app.base.Path sanitazePath(it.sssupserver.app.base.Path path) {
+        it.sssupserver.app.base.Path ans;
+        if (path.isDir()) {
+            // refer to dir
+            ans = new it.sssupserver.app.base.Path(
+                path.toString().replaceAll("\\.", "#"), true
+            );
+        } else {
+            // regular file
+            ans = new it.sssupserver.app.base.Path(
+                path.getDirname().toString().replaceAll("\\.", "#"), true
+            ).createSubfile(
+                path.getBasename().contains(".")
+                ? path.getBasename()
+                : "#" + path.getBasename()
+            );
+        }
+        return ans;
+    }
+    /**
+     * Revert sanitazePath operations
+     */
+    public static it.sssupserver.app.base.Path unsanitazePath(it.sssupserver.app.base.Path path) {
+        it.sssupserver.app.base.Path ans;
+        if (path.isDir()) {
+            // refer to dir
+            ans = new it.sssupserver.app.base.Path(
+                path.toString().replaceAll("#", "\\."), true
+            );
+        } else {
+            // regular file
+            ans = new it.sssupserver.app.base.Path(
+                path.getDirname().toString().replaceAll("#", "\\."), true
+            ).createSubfile(
+                path.getBasename().startsWith("#")
+                ? path.getBasename().substring(1)
+                : path.getBasename()
+            );
+        }
+        return ans;
+    }
+
+    /**
      * Prevent race condition:
      *  never decrease timestamp
      */
@@ -378,7 +423,7 @@ public class SimpleCDNHandler implements RequestHandler {
                             // return first line
                             return new String(b, StandardCharsets.UTF_8).split("\n")[0];
                         };
-                        var firstLine = FileReducerCommand.reduce(executor, getPath(), identity, accumulator, reducer, finalizer).toString();
+                        var firstLine = FileReducerCommand.reduce(executor, sanitazePath(getPath()), identity, accumulator, reducer, finalizer).toString();
                         // validate ETAG
                         try {
                             var eTag = new ETagParser(firstLine);
@@ -483,13 +528,13 @@ public class SimpleCDNHandler implements RequestHandler {
                             buf.put(bytecontent);
                             buf.flip();
                             // schedule creation of file
-                            var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
+                            var cc = QueableCreateCommand.submit(executor, sanitazePath(dstPath), identity, w);
                             if (cc.getFuture().get() != true) {
                                 throw new RuntimeException("Failed to create file: " + searchPath);
                             }
                         }
                         // delete original one
-                        var f = FutureDeleteCommand.delete(executor, currentPath, identity);
+                        var f = FutureDeleteCommand.delete(executor, sanitazePath(currentPath), identity);
                         f.get();
                         // change reference in Node object
                         node.rename(dstPath);
@@ -715,9 +760,9 @@ public class SimpleCDNHandler implements RequestHandler {
                 var dstPath = deleted.getSearchPath().getDirname()
                     .createSubfile(metadata.toString());
                 // enforce directory creation
-                FutureMkdirCommand.create(executor, dstPath.getDirname(), identity).get();
+                FutureMkdirCommand.create(executor, sanitazePath(dstPath.getDirname()), identity).get();
                 // schedule creation of file
-                var cc = QueableCreateCommand.submit(executor, dstPath, identity, w);
+                var cc = QueableCreateCommand.submit(executor, sanitazePath(dstPath), identity, w);
                 if (cc.getFuture().get() != true) {
                     throw new RuntimeException("Failed to add deleted file: " + searchPath);
                 }
@@ -777,7 +822,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 // new file name
                 var finalName = metadata.toString();
                 var dstPath = dirname.createSubfile(finalName);
-                var f = FutureMoveCommand.move(executor, filePath, dstPath, identity);
+                var f = FutureMoveCommand.move(executor, sanitazePath(filePath), sanitazePath(dstPath), identity);
                 // wait for move completion
                 f.get();
                 // new filePath
@@ -797,7 +842,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 // new file name
                 var finalName = metadata.toString();
                 var dstPath = dirname.createSubfile(finalName);
-                var f = FutureMoveCommand.move(executor, filePath, dstPath, identity);
+                var f = FutureMoveCommand.move(executor, sanitazePath(filePath), sanitazePath(dstPath), identity);
                 // wait for move completion
                 f.get();
                 // new filePath
@@ -857,6 +902,23 @@ public class SimpleCDNHandler implements RequestHandler {
             return snapshot.getRegularFileNodes();
         }
 
+        /**
+         * Replace "." (dots) with "#" in file names,
+         * used to avoid clashes in
+         */
+        private void unsanitazePathNames() {
+            Arrays.stream(snapshot.getAllNodes())
+                .forEach(
+                    n -> {
+                        n.setPath(
+                            unsanitazePath(
+                                n.getPath()
+                            )
+                        );
+                    }
+                );
+        }
+
         // test
         private void assertValidDirectoryNames() {
             var badFiles = Arrays.stream(snapshot.getDirectorysNodes())
@@ -880,7 +942,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var fh = Arrays.stream(fileNodes).map((Function<Node,Future<byte[]>>)n -> {
                 var filename = n.getPath();
                 try {
-                    return FileReducerCommand.reduceByHash(executor, filename, identity, HASH_ALGORITHM);
+                    return FileReducerCommand.reduceByHash(executor, sanitazePath(filename), identity, HASH_ALGORITHM);
                 } catch (Exception e) {
                     e.printStackTrace();
                     var ff = new CompletableFuture<byte[]>();
@@ -892,7 +954,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var fs = Arrays.stream(fileNodes).map((Function<Node,Future<Long>>)n -> {
                 var filename = n.getPath();
                 try {
-                    return FutureFileSizeCommand.querySize(executor, filename, identity);
+                    return FutureFileSizeCommand.querySize(executor, sanitazePath(filename), identity);
                 } catch (Exception e) {
                     e.printStackTrace();
                     var ff = new CompletableFuture<Long>();
@@ -923,6 +985,8 @@ public class SimpleCDNHandler implements RequestHandler {
             // retrieve image of the file system
             var f = ListTreeCommand.explore(executor, "", identity);
             snapshot = f.get();
+            // unsanitaze all names to recover original names
+            unsanitazePathNames();
             // check all names are valid
             assertValidDirectoryNames();
             // calculate file hashes
@@ -1683,7 +1747,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var mime = estimateMimeType(metadata.getSimpleName());
             var headers = Collections.singletonMap("Content-Type", mime);
             // send file back
-            HttpSchedulableReadCommand.handle(executor, exchange, identity, truePath, headers);
+            HttpSchedulableReadCommand.handle(executor, exchange, identity, sanitazePath(truePath), headers);
             // DONE
         }
 
@@ -1728,7 +1792,7 @@ public class SimpleCDNHandler implements RequestHandler {
             metadata.setTemporary(true);
             var temporaryFilename = dirname.createSubfile(metadata.toString());
             // assert directory path creation
-            FutureMkdirCommand.create(executor, dirname, identity).get();
+            FutureMkdirCommand.create(executor, sanitazePath(dirname), identity).get();
             {
                 // extract expected file size
                 long contentLength;
@@ -1762,7 +1826,10 @@ public class SimpleCDNHandler implements RequestHandler {
                     }
                     buf.flip();
                     // create file locally and start storing it
-                    QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
+                    QueableCommand queable = QueableCreateCommand.submit(executor,
+                        sanitazePath(temporaryFilename),
+                        identity,
+                        bufWrapper);
                     // store file piece by piece
                     while (contentLength > 0) {
                         // take a new buffer
@@ -1793,7 +1860,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 if (!success) {
                     // delete temporary file
                     try {
-                        FutureDeleteCommand.delete(executor, temporaryFilename, identity).get();
+                        FutureDeleteCommand.delete(executor, sanitazePath(temporaryFilename), identity).get();
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -1803,7 +1870,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // rename file with final name - i.e. remove "@tmp"
             metadata.setTemporary(false);
             var finalName = dirname.createSubfile(metadata.toString());
-            FutureMoveCommand.move(executor, temporaryFilename, finalName, identity).get();
+            FutureMoveCommand.move(executor, sanitazePath(temporaryFilename), sanitazePath(finalName), identity).get();
             // add save new reference to file as available
             var newNode = fsStatus.addRegularFileNode(finalName);
             // Compute size
