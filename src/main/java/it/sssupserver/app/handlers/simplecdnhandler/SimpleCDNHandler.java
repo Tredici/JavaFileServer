@@ -175,6 +175,10 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // hold topology seen by this node
     private Topology topology;
+    public Topology getTopology() {
+        return topology;
+    }
+
     /**
      * Directly operate on the current node
      * @param R
