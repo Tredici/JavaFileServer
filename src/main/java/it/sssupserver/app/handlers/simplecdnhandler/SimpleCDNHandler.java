@@ -1030,7 +1030,10 @@ public class SimpleCDNHandler implements RequestHandler {
                     // schedule download
                     try {
                         // check if already downloaded in the meantime
-                        if (handler.getFsStatus().isRemoteVersionDownloadable(file)) {
+                        if (handler.getFsStatus().isRemoteVersionDownloadable(file)
+                            // or if topology has changed
+                            && topology.isFileSupplier(searchPath)
+                        ) {
                             startDownloadOrDeletion(searchPath, file);
                         } else {
                             // release lock
