@@ -8,6 +8,7 @@ import it.sssupserver.app.users.Identity;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Map;
 import java.util.concurrent.Semaphore;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -73,21 +74,34 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
         this.myResult = new Result(new SizeCommand(getPath()));
         this.exchange = exchange;
     }
-    
+
     // wait untill the size is get from
     private boolean waitForSizeOrFail() throws Exception {
         var success = this.myResult.success();
         return success;
     }
-    
+
     private Result getSizeQuery() {
         return this.myResult;
     }
 
+    // In case of good response (200 OK) insert these headers inside the
+    // response
+    private Map<String, String> onSuccessHeaders;
+    private void setOnSuccessHeaders(Map<String, String> onSuccessHeaders) {
+        this.onSuccessHeaders = onSuccessHeaders;
+    }
     // send header with size
     private void startReadBodyResponse() throws IOException {
         var resHead = exchange.getResponseHeaders();
-        resHead.add("Content-Disposition", "attachment");
+        if (onSuccessHeaders != null) {
+            for (var pair : onSuccessHeaders.entrySet()) {
+                resHead.add(pair.getKey(), pair.getValue());
+            }
+        } else {
+            // by default download
+            resHead.add("Content-Disposition", "attachment");
+        }
         exchange.sendResponseHeaders(200, this.myResult.getSize());
     }
 
@@ -131,11 +145,14 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
         handle(executor, exchange, null);
     }
 
-    public static void handle(FileManager executor, HttpExchange exchange, Identity user, Path path) throws Exception {
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user, Path path, Map<String, String> onSuccessHeaders) throws Exception {
         var cmd = new ReadCommand(path);
         var schedulable = new HttpSchedulableReadCommand(cmd, exchange);
         if (user != null) {
             schedulable.setUser(user);
+        }
+        if (onSuccessHeaders != null) {
+            schedulable.setOnSuccessHeaders(onSuccessHeaders);
         }
         executor.scheduleExecution(schedulable.getSizeQuery());
         // block to get file size
@@ -148,10 +165,18 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
         }
     }
 
-    public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user, Path path) throws Exception {
+        handle(executor, exchange, user, path, null);
+    }
+
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user, Map<String, String> onSuccessHeaders) throws Exception {
         var uri = exchange.getRequestURI();
         var path = uri.getPath();
         var fixedPath = HttpHelper.normalizePath(path);
-        handle(executor, exchange, user, fixedPath);
+        handle(executor, exchange, user, fixedPath, onSuccessHeaders);
+    }
+
+    public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
+        handle(executor, exchange, user, (Map<String, String>)null);
     }
 }

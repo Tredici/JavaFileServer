@@ -60,6 +60,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
@@ -81,6 +82,8 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import org.apache.tika.Tika;
 
 import static it.sssupserver.app.handlers.httphandler.HttpResponseHelpers.*;
 import static it.sssupserver.app.handlers.simplecdnhandler.FilenameCheckers.*;
@@ -182,6 +185,13 @@ public class SimpleCDNHandler implements RequestHandler {
 
     private URL[] getManagementEndpoints() {
         return thisnode.managerendpoint;
+    }
+
+    private Tika mimeDetector = new Tika();
+    // Estimate MIME Type from file name
+    public String estimateMimeType(String filename) {
+        String ans = mimeDetector.detect(filename);
+        return ans != null ? ans : "application/octet-stream";
     }
 
     // hold topology seen by this node
@@ -755,7 +765,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var filePath = node.getPath();
             var basename = filePath.getBasename();
             var dirname = filePath.getDirname();
-            // extract metadata 
+            // extract metadata
             var metadata = new FilenameMetadata(basename);
             // extract search path
             var searchPath = dirname.createSubfile(metadata.getSimpleName());
@@ -1400,8 +1410,11 @@ public class SimpleCDNHandler implements RequestHandler {
                                 httpNotFound(exchange);
                             } else {
                                 try {
+                                    // Try to detect MIME type
+                                    var mime = estimateMimeType(requestedFile);
+                                    var headers = Collections.singletonMap("Content-Type", mime);
                                     // recicle old working code
-                                    HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity, truePath);
+                                    HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity, truePath, headers);
                                 } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
                             }
                         }
@@ -1782,8 +1795,11 @@ public class SimpleCDNHandler implements RequestHandler {
             resH.set("ETag", localETag);
             // path of the file effectively returned
             var truePath = candidateVersion.getPath();
+            // Try to detect MIME type
+            var mime = estimateMimeType(metadata.getSimpleName());
+            var headers = Collections.singletonMap("Content-Type", mime);
             // send file back
-            HttpSchedulableReadCommand.handle(executor, exchange, identity, truePath);
+            HttpSchedulableReadCommand.handle(executor, exchange, identity, truePath, headers);
             // DONE
         }
 
@@ -1846,7 +1862,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 int len;
                 java.nio.ByteBuffer buf;
                 boolean success;
-                try {                    
+                try {
                     bufWrapper = BufferManager.getBuffer();
                     buf = bufWrapper.get();
                     // read until data availables or buffer filled
