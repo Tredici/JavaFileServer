@@ -7,9 +7,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
 
-public class FileStatsGson implements JsonSerializer<SimpleCDNHandler.StatsCollector.FileStats> {
+public class FileStatsGson implements JsonSerializer<StatsCollector.FileStats> {
     @Override
-    public JsonElement serialize(SimpleCDNHandler.StatsCollector.FileStats src, Type typeOfSrc, JsonSerializationContext context) {
+    public JsonElement serialize(StatsCollector.FileStats src, Type typeOfSrc, JsonSerializationContext context) {
         var jObj = new JsonObject();
         jObj.addProperty("Path", src.getPath());
         jObj.addProperty("Supplied", src.getSupplied());

@@ -7,7 +7,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
 
-import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler.StatsCollector;
 
 public class StatisticsWithIdentityGson implements JsonSerializer<StatisticsWithIdentityGson> {
     private DataNodeDescriptor identity;
