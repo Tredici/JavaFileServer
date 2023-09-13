@@ -92,6 +92,8 @@ public class SimpleCDNHandler implements RequestHandler {
     public static final String DEFAULT_CONFIG_FILE = "SimpleCDN.json";
     private Path config_file = Path.of(DEFAULT_CONFIG_FILE);
 
+    public static final int BACKLOG = 1024;
+
     // running configuration loaded from comfig file inside constructor
     private SimpleCDNConfiguration config;
     // identity associated with current replica
@@ -224,7 +226,8 @@ public class SimpleCDNHandler implements RequestHandler {
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.toURI().resolve(path).toString());
+                    .add("Location", redirect.toURI()
+                    .resolve(path.replaceAll(" ", "%20")).toString());
                 // 308 Permanent Redirect
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
                 exchange.sendResponseHeaders(308, 0);
@@ -249,12 +252,14 @@ public class SimpleCDNHandler implements RequestHandler {
                 // 308 Permanent Redirect
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections
                 exchange.getResponseHeaders()
-                    .add("Location", redirect.toURI().resolve(path).toString());
+                    .add("Location", redirect.toURI()
+                    .resolve(path.replaceAll(" ", "%20")).toString());
                 exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
                 // TODO: should only log error
+                e.printStackTrace();
             }
             return false;
         }
@@ -272,14 +277,15 @@ public class SimpleCDNHandler implements RequestHandler {
                 exchange.getResponseHeaders()
                     .add("Location", redirect.toURI()
                     .resolve(FileManagementHttpHandler.PATH + "/")
-                    .resolve(path).toString());
+                    .resolve(path.replaceAll(" ", "%20")).toString());
                 // 308 Permanent Redirect
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
                 exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
-                // TODO: should only log error
+                e.printStackTrace();
+                httpInternalServerError(exchange);
             }
             return false;
         }
@@ -298,12 +304,12 @@ public class SimpleCDNHandler implements RequestHandler {
                 exchange.getResponseHeaders()
                     .add("Location", redirect.toURI()
                     .resolve(FileManagementHttpHandler.PATH + "/")
-                    .resolve(path).toString());
+                    .resolve(path.replaceAll(" ", "%20")).toString());
                 exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
                 exchange.close();
             } catch (Exception e) {
-                // TODO: should only log error
+                e.printStackTrace();
             }
             return false;
         }
@@ -1443,7 +1449,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         // activate all endpoints
         for (var addr : clientAddresses) {
-            var hs = HttpServer.create(addr, 30);
+            var hs = HttpServer.create(addr, BACKLOG);
             // Add http handler for clients
             hs.createContext("/", new ClientHttpHandler());
             clientHttpServers.add(hs);
@@ -1709,7 +1715,7 @@ public class SimpleCDNHandler implements RequestHandler {
         var searchPath = remote.getEffectivePath().toString();
         var rUri = uri
             .resolve(FileManagementHttpHandler.PATH + "/")
-            .resolve(searchPath);
+            .resolve(searchPath.replaceAll(" ", "%20"));
         var req = HttpRequest.newBuilder(rUri)
             .GET()
             .build();
@@ -1821,6 +1827,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // assert directory path creation
             FutureMkdirCommand.create(executor, dirname, identity).get();
             {
+                // extract expected file size
                 long contentLength;
                 var contentLengthHeader = exchange.getRequestHeaders().getFirst("Content-Length");
                 if (contentLengthHeader != null) {
@@ -1835,30 +1842,11 @@ public class SimpleCDNHandler implements RequestHandler {
                 BufferWrapper bufWrapper;
                 int len;
                 java.nio.ByteBuffer buf;
-                // extract expected file size
-
-                bufWrapper = BufferManager.getBuffer();
-                buf = bufWrapper.get();
-                // read until data availables or buffer filled
-                while (contentLength > 0 && buf.hasRemaining()) {
-                    len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
-                    if (len == -1) {
-                        break;
-                    }
-                    contentLength -= len;
-                    receivedFileSize += len;
-                    md.update(tmp, 0, len);
-                    buf.put(tmp, 0, len);
-                }
-                buf.flip();
-                // create file locally and start storing it
-                QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
-                // store file piece by piece
-                while (contentLength > 0) {
-                    // take a new buffer
+                boolean success;
+                try {                    
                     bufWrapper = BufferManager.getBuffer();
                     buf = bufWrapper.get();
-                    // fill this buffer
+                    // read until data availables or buffer filled
                     while (contentLength > 0 && buf.hasRemaining()) {
                         len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
                         if (len == -1) {
@@ -1870,14 +1858,42 @@ public class SimpleCDNHandler implements RequestHandler {
                         buf.put(tmp, 0, len);
                     }
                     buf.flip();
-                    // append new
-                    queable.enqueue(bufWrapper);
+                    // create file locally and start storing it
+                    QueableCommand queable = QueableCreateCommand.submit(executor, temporaryFilename, identity, bufWrapper);
+                    // store file piece by piece
+                    while (contentLength > 0) {
+                        // take a new buffer
+                        bufWrapper = BufferManager.getBuffer();
+                        buf = bufWrapper.get();
+                        // fill this buffer
+                        while (contentLength > 0 && buf.hasRemaining()) {
+                            len = is.read(tmp, 0, (int)Math.min((long)tmp.length, contentLength));
+                            if (len == -1) {
+                                break;
+                            }
+                            contentLength -= len;
+                            receivedFileSize += len;
+                            md.update(tmp, 0, len);
+                            buf.put(tmp, 0, len);
+                        }
+                        buf.flip();
+                        // append new
+                        queable.enqueue(bufWrapper);
+                    }
+                    // wait for completion
+                    success = queable.getFuture().get();
+                } catch (IOException e) {
+                    System.err.println("Received only " + receivedFileSize + "/" + contentLength + " bytes");
+                    e.printStackTrace();
+                    success = false;
                 }
-                // wait for completion
-                var success = queable.getFuture().get();
                 if (!success) {
                     // delete temporary file
-                    FutureDeleteCommand.delete(executor, temporaryFilename, identity).get();
+                    try {
+                        FutureDeleteCommand.delete(executor, temporaryFilename, identity).get();
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
                     throw new RuntimeException("Error while creating file: " + temporaryFilename);
                 }
             }
@@ -1893,7 +1909,7 @@ public class SimpleCDNHandler implements RequestHandler {
             var lfi = fsStatus.addLocalFileInfo(newNode);
             // TODO: delete possible old versions
             // send 201 CREATED
-            httpCreated(exchange, "File saved as: " + finalName);
+            httpCreated(exchange, "File saved as: " + finalName + "\n");
             // Local files updated!
             updateLastFileUpdateTimestamp();
         }
@@ -1951,7 +1967,7 @@ public class SimpleCDNHandler implements RequestHandler {
                         httpMethodNotAllowed(exchange);
                 }
             } catch (Exception e) {
-                System.err.println(e);
+                System.err.println("Error: " + exchange.getRequestMethod() + " " + exchange.getRequestURI().toString());
                 e.printStackTrace();
                 // handle unexpected error
                 httpInternalServerError(exchange);
@@ -1989,7 +2005,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
         // add all endpoint
         for (var addr : managementAddresses) {
-            var hs = HttpServer.create(addr, 30);
+            var hs = HttpServer.create(addr, BACKLOG);
             // handle /api calls
             hs.createContext(ApiManagementHttpHandler.PATH, new ApiManagementHttpHandler());
             // handle GET, PUT and DELETE for admins only
