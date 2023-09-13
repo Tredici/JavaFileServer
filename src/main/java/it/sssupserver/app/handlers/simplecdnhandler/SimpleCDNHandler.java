@@ -1252,7 +1252,7 @@ public class SimpleCDNHandler implements RequestHandler {
      * all all statistics regarding client operations affecting
      * this node
      */
-    public class StatsCollector {
+    public static class StatsCollector {
 
         // per file stats
         public class FileStats {
@@ -1332,6 +1332,27 @@ public class SimpleCDNHandler implements RequestHandler {
     // this object is mantained alive for all the Handler lifespan
     private StatsCollector clientStatsCollector = new StatsCollector();
 
+    public void incrementDownloadCount(String searchPath) {
+        var s = clientStatsCollector.getFileStats(searchPath);
+        if (s != null) {
+            s.incSupplied();
+        }
+    }
+
+    public void incrementRedirectCount(String searchPath) {
+        var s = clientStatsCollector.getFileStats(searchPath);
+        if (s != null) {
+            s.incRedirects();
+        }
+    }
+
+    public void incrementNotFoundCount(String searchPath) {
+        var s = clientStatsCollector.getFileStats(searchPath);
+        if (s != null) {
+            s.incErrors();
+        }
+    }
+
     private String regularFilesInfoWithMeToJson(boolean prettyPrinting) {
         var obj = new FileInfoWithIdentityGson(thisnode, fsStatus.getAllRegularFileNodes());
         var gBuilder = new GsonBuilder()
@@ -1377,7 +1398,7 @@ public class SimpleCDNHandler implements RequestHandler {
     public String statisticsWithIdentity(boolean prettyPrinting) {
         var obj = new StatisticsWithIdentityGson(thisnode, clientStatsCollector.getFileStats());
         var gBuilder = new GsonBuilder()
-            .registerTypeAdapter(DataNodeDescriptorGson.class, new DataNodeDescriptorGson())
+            .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
             .registerTypeAdapter(StatsCollector.FileStats.class, new FileStatsGson())
             .registerTypeAdapter(StatsCollector.class, new StatsCollectorGson())
             .registerTypeAdapter(StatisticsWithIdentityGson.class, obj);
@@ -1408,6 +1429,7 @@ public class SimpleCDNHandler implements RequestHandler {
                             if (truePath == null) {
                                 // return 404
                                 httpNotFound(exchange);
+                                SimpleCDNHandler.this.incrementNotFoundCount(requestedFile);
                             } else {
                                 try {
                                     // Try to detect MIME type
@@ -1415,8 +1437,12 @@ public class SimpleCDNHandler implements RequestHandler {
                                     var headers = Collections.singletonMap("Content-Type", mime);
                                     // recicle old working code
                                     HttpSchedulableReadCommand.handle(SimpleCDNHandler.this.executor, exchange, SimpleCDNHandler.this.identity, truePath, headers);
+                                    SimpleCDNHandler.this.incrementDownloadCount(requestedFile);
                                 } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
                             }
+                        } else {
+                            // one more redirect
+                            SimpleCDNHandler.this.incrementRedirectCount(requestedFile);
                         }
                         break;
                     default:
