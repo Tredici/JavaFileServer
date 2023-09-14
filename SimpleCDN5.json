@@ -1,7 +1,7 @@
 {
     "User": "SimpleCDN",
     "ReplicationFactor": 3,
-    "NodeId": -700000,
+    "NodeId": -700000000,
     "ClientEndpoints": [
         {
             "Url": "http://127.0.0.1:4444"
