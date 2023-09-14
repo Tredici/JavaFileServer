@@ -24,6 +24,10 @@ public class ClientHttpHandler implements HttpHandler {
             switch (exchange.getRequestMethod()) {
                 case "GET":
                     var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
+                    // if end with /, gently use /index.html
+                    if (requestedFile.isEmpty() || requestedFile.endsWith("/")) {
+                        requestedFile += "index.html";
+                    }
                     // check if current node is file supplier or redirect
                     if (handler.testSupplyabilityOrRedirect(requestedFile, exchange)) {
                         // prevent clients from directly accessing local files
@@ -38,7 +42,7 @@ public class ClientHttpHandler implements HttpHandler {
                                 var mime = handler.estimateMimeType(requestedFile);
                                 var headers = Collections.singletonMap("Content-Type", mime);
                                 // recicle old working code
-                                HttpSchedulableReadCommand.handle(handler.getFileManager(), 
+                                HttpSchedulableReadCommand.handle(handler.getFileManager(),
                                     exchange,
                                     handler.getIdentity(),
                                     SimpleCDNHandler.sanitazePath(truePath),

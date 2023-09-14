@@ -1693,6 +1693,10 @@ public class SimpleCDNHandler implements RequestHandler {
         private void handleGET(HttpExchange exchange) throws Exception {
             // path to requsted file
             var requestedFile = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
+            // missing file name corresponds to index.html
+            if (requestedFile.isEmpty() || requestedFile.endsWith("/")) {
+                requestedFile += "index.html";
+            }
             // check if specific version of the file was required
             // extract metadata
             it.sssupserver.app.base.Path receivedPath = null;
