@@ -2140,6 +2140,10 @@ public class SimpleCDNHandler implements RequestHandler {
         if (w == watcher) {
             watcher.unbind();
         }
+        if (peer.getStatus() == DataNodeDescriptor.Status.FAILED) {
+            // remote node FAILED! Maybe resync might help in case of fast failures
+            candidatesById.forEach((k, v) -> v.requestFileCheck());
+        }
         // after 120 seconds, schedule node removal from topology
         getTimedThreadPool()
         .schedule(() -> {

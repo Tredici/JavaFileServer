@@ -276,10 +276,21 @@ public class PeerWatcher implements Runnable, BiConsumer<HttpResponse<String>,Th
         peerFileWatcher.schedule();
     }
 
+    public boolean isBind() {
+        return associatedPeer != null;
+    }
+
     public DataNodeDescriptor unbind() {
         var ans = associatedPeer;
         associatedPeer = null;
         return ans;
+    }
+
+    // Called by the handler, trigger a file check if other nodes went down
+    public void requestFileCheck() {
+        if (isBind()) {
+            peerFileWatcher.schedule();
+        }
     }
 
     // peridically, enforce file check (in case of unexpected error in ts update)
