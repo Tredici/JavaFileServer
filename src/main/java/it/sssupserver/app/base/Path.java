@@ -144,9 +144,13 @@ public class Path implements Cloneable {
         if (!this.isDir()) {
             throw new RuntimeException("Cannot invoke createSubElement from regular file");
         }
-        var newpath = Arrays.copyOf(this.path, this.path.length+1);
-        newpath[this.path.length] = name;
-        return new Path(newpath, isDir);
+        if (this.path.length == 1 && this.path[0].isEmpty()) {
+            return new Path(new String[]{name}, isDir);
+        } else {
+            var newpath = Arrays.copyOf(this.path, this.path.length+1);
+            newpath[this.path.length] = name;
+            return new Path(newpath, isDir);
+        }
     }
 
     public Path createSubfile(String filename) {
