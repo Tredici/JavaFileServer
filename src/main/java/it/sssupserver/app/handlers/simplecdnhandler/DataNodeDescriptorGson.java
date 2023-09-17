@@ -20,8 +20,8 @@ public class DataNodeDescriptorGson
         var jObj = new JsonObject();
         jObj.addProperty("Id", src.getId());
         jObj.addProperty("ReplicationFactor", src.getReplicationFactor());
-        jObj.add("DataEndpoints", context.serialize(src.dataendpoints));
-        jObj.add("ManagerEndpoint", context.serialize(src.managerendpoint));
+        jObj.add("DataEndpoints", context.serialize(src.dataEndpoints));
+        jObj.add("ManagerEndpoint", context.serialize(src.managementEndpoints));
         jObj.addProperty("StartInstant", src.getStartInstant().toEpochMilli());
         jObj.addProperty("Status", src.status.toString());
         jObj.addProperty("LastFileUpdate", src.getLastFileUpdate().toEpochMilli());
@@ -47,13 +47,13 @@ public class DataNodeDescriptorGson
             // read management endpoints
             var jArray = jObj.get("ManagerEndpoint").getAsJsonArray();
             var mes = (URL[])context.deserialize(jArray, URL[].class);
-            ans.setManagerendpoint(mes);
+            ans.setManagementEndpoints(mes);
         }
         {
             // read management endpoints
             var jArray = jObj.get("DataEndpoints").getAsJsonArray();
             var des = (URL[])context.deserialize(jArray, URL[].class);
-            ans.setDataendpoints(des);
+            ans.setDataEndpoints(des);
         }
         return ans;
     }

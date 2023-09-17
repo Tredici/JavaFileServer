@@ -2,6 +2,7 @@ package it.sssupserver.app.handlers.simplecdnhandler;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 
 import com.google.gson.GsonBuilder;
@@ -174,8 +175,8 @@ public class SimpleCDNHandler implements RequestHandler {
      * Can this node interact with the other?
      */
     public boolean isDataNodeCompatible(DataNodeDescriptor o) {
-        return o.getDataendpoints().length > 0
-         && o.getManagerendpoint().length > 0
+        return o.getDataEndpoints().length > 0
+         && o.getManagementEndpoints().length > 0
          && thisnode.areComplatible(o);
     }
 
@@ -204,11 +205,11 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     private URL[] getClientEndpoints() {
-        return thisnode.dataendpoints;
+        return thisnode.dataEndpoints;
     }
 
     private URL[] getManagementEndpoints() {
-        return thisnode.managerendpoint;
+        return thisnode.managementEndpoints;
     }
 
     private Tika mimeDetector = new Tika();
@@ -258,8 +259,8 @@ public class SimpleCDNHandler implements RequestHandler {
             return true;
         } else {
             var owner = topology.getFileOwner(path);
-            var index = (int)(owner.dataendpoints.length * Math.random());
-            var redirect = owner.dataendpoints[index];
+            var index = (int)(owner.dataEndpoints.length * Math.random());
+            var redirect = owner.dataEndpoints[index];
             try {
                 // Set Location header
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Location
@@ -320,6 +321,10 @@ public class SimpleCDNHandler implements RequestHandler {
                 //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
                 exchange.sendResponseHeaders(308, 0);
                 exchange.getResponseBody().flush();
+                // help .NET that is unable to cope with response-before-request
+                if (exchange.getRequestMethod().equals("PUT")) {
+                    exchange.getRequestBody().transferTo(OutputStream.nullOutputStream());
+                }
                 exchange.close();
             } catch (Exception e) {
                 e.printStackTrace();
@@ -1187,11 +1192,11 @@ public class SimpleCDNHandler implements RequestHandler {
         // set thisnode parameters
         thisnode = new DataNodeDescriptor();
         thisnode.id = config.getnodeId();
-        thisnode.dataendpoints = Arrays.stream(config.getClientEndpoints())
+        thisnode.dataEndpoints = Arrays.stream(config.getClientEndpoints())
             .map(he -> he.getUrl()).toArray(URL[]::new);
-        thisnode.managerendpoint = Arrays.stream(config.getManagementEndpoints())
+        thisnode.managementEndpoints = Arrays.stream(config.getManagementEndpoints())
             .map(he -> he.getUrl()).toArray(URL[]::new);
-        thisnode.replication_factor = config.getReplicationFactor();
+        thisnode.replicationFactor = config.getReplicationFactor();
         // must also initialize topology
         topology = new Topology(this);
     }
@@ -2037,7 +2042,7 @@ public class SimpleCDNHandler implements RequestHandler {
     private void watchIfNotWatched(DataNodeDescriptor remoteNode) throws URISyntaxException {
         var rn = topology.findDataNodeDescriptorById(remoteNode.getId());
         if (rn == null && isDataNodeCompatible(remoteNode)) {
-            for (var me : remoteNode.getManagerendpoint()) {
+            for (var me : remoteNode.getManagementEndpoints()) {
                 watch(me);
             }
         }
@@ -2164,7 +2169,7 @@ public class SimpleCDNHandler implements RequestHandler {
                 var known = topology.findDataNodeDescriptorById(peer.getId());
                 if (known == null) {
                     // new to watch
-                    for (var url : peer.getManagerendpoint()) {
+                    for (var url : peer.getManagementEndpoints()) {
                         watch(url);
                     }
                 } else {

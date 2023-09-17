@@ -41,6 +41,10 @@ public class Topology {
 
     // null means thisnode
     public DataNodeDescriptor findPrevious(DataNodeDescriptor node) {
+        // prevent reace condition
+        if (node == null) {
+            return null;
+        }
         // any previous?
         var prevE = datanodes.floorEntry(node.id-1);
         if (prevE == null) {
@@ -53,6 +57,10 @@ public class Topology {
 
     // null means thisnode
     public DataNodeDescriptor findSuccessor(DataNodeDescriptor node) {
+        // prevent reace condition
+        if (node == null) {
+            return null;
+        }
         // any successor?
         var succE = datanodes.ceilingEntry(node.id+1);
         if (succE == null) {
@@ -94,7 +102,7 @@ public class Topology {
 
     public List<DataNodeDescriptor> getFileSuppliers(String path) {
         // expected number o
-        var R = thisnode.replication_factor;
+        var R = thisnode.replicationFactor;
         List<DataNodeDescriptor> ans = new ArrayList<>(R);
         final var owner = getFileOwner(path);
         ans.add(owner);
