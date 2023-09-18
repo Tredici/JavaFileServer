@@ -74,16 +74,22 @@ public class HttpResponseHelpers {
 
     public static void httpMethodNotAllowed(HttpExchange exchange) {
         try {
+            var res = new StringBuilder()
+                .append("405 Method Not Allowed")
+                .append("\n")
+                .toString()
+                .getBytes(StandardCharsets.UTF_8);
             // 405 Method Not Allowed
             //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405
-            exchange.sendResponseHeaders(405, 0);
+            exchange.sendResponseHeaders(405, res.length);
+            exchange.getResponseBody().write(res);
             exchange.getResponseBody().flush();
             exchange.close();
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
 
     public static void httpNotFound(HttpExchange exchange) {
-        httpNotFound(exchange, null);
+        httpNotFound(exchange, "404 Not Found");
     }
 
     public static void httpGone(HttpExchange exchange) {
@@ -98,11 +104,12 @@ public class HttpResponseHelpers {
 
     public static void httpNotFound(HttpExchange exchange, String error) {
         try {
-            exchange.sendResponseHeaders(404, 0);
+            var msg = error != null ? error.getBytes(StandardCharsets.UTF_8) : null;
+            exchange.sendResponseHeaders(404, msg != null ? msg.length : 0);
             if (error != null && !error.isBlank()) {
                 var os = exchange.getResponseBody();
-                os.write(error.getBytes(StandardCharsets.UTF_8));
-                os.flush();;
+                os.write(msg);
+                os.flush();
             } else {
                 exchange.getResponseBody().flush();
             }
@@ -117,5 +124,5 @@ public class HttpResponseHelpers {
             exchange.close();
         } catch (Exception e) { System.err.println(e); e.printStackTrace(); }
     }
-    
+
 }
