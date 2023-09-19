@@ -1,6 +1,8 @@
 package it.sssupserver.app.handlers.httphandler;
 
 import java.io.IOException;
+import java.util.Collections;
+
 import it.sssupserver.app.filemanagers.FileManager;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -40,7 +42,10 @@ public class HttpRequestHandler implements HttpHandler {
                             HttpSchedulableSizeCommand.handle(this.executor, exchange);
                             break;
                         default:
-                            HttpSchedulableReadCommand.handle(this.executor, exchange);
+                            // Try to detect MIME type
+                            var mime = HttpHelper.estimateMimeType(exchange.getRequestURI().getPath());
+                            var headers = Collections.singletonMap("Content-Type", mime);
+                            HttpSchedulableReadCommand.handle(this.executor, exchange, headers);
                         }
                     }
                     break;
@@ -60,7 +65,7 @@ public class HttpRequestHandler implements HttpHandler {
             exchange.close();
         }
     }
-    
+
 
     private static void notImplemented(HttpExchange exchange) throws IOException {
         exchange.sendResponseHeaders(501, 0);
