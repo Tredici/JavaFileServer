@@ -1,9 +1,10 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.httphandlers;
 
 import java.io.IOException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler;
 import java.net.URI;
 import java.util.Collections;
 

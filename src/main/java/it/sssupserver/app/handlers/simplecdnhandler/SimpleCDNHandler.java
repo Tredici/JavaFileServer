@@ -28,6 +28,7 @@ import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ClientHttpHandler;
 import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
