@@ -4,12 +4,21 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Stack;
 
+import org.apache.tika.Tika;
+
 import it.sssupserver.app.base.InvalidPathException;
 import it.sssupserver.app.base.Path;
 
 import com.sun.net.httpserver.HttpExchange;
 
 public class HttpHelper {
+
+    private static Tika mimeDetector = new Tika();
+    // Estimate MIME Type from file name
+    public static String estimateMimeType(String filename) {
+        String ans = mimeDetector.detect(filename);
+        return ans != null ? ans : "application/octet-stream";
+    }
 
     public static String escapeString(String str) {
         return str.replaceAll("\\\\", "\\")
@@ -52,7 +61,7 @@ public class HttpHelper {
         var httpheader = exchange.getRequestHeaders();
         if (!httpheader.containsKey("Content-Type")) {
             var os = exchange.getResponseBody();
-            try {                
+            try {
                 os.flush();
                 os.close();
             } catch (Exception e) { }
