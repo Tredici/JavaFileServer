@@ -5,6 +5,8 @@ import java.time.Instant;
 
 import com.google.gson.GsonBuilder;
 
+import it.sssupserver.app.handlers.simplecdnhandler.gson.DataNodeDescriptorGson;
+
 // this class
 public class DataNodeDescriptor {
     // a DataNote can traverse all these status

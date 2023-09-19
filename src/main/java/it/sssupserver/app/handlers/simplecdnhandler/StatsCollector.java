@@ -5,6 +5,9 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import com.google.gson.GsonBuilder;
 
+import it.sssupserver.app.handlers.simplecdnhandler.gson.FileStatsGson;
+import it.sssupserver.app.handlers.simplecdnhandler.gson.StatsCollectorGson;
+
 /**
  * This class will be charged of collecting and supplying
  * all all statistics regarding client operations affecting

@@ -16,6 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 import it.sssupserver.app.handlers.simplecdnhandler.DataNodeDescriptor.Status;
+import it.sssupserver.app.handlers.simplecdnhandler.gson.RemoteFilesWithIdentityGson;
+import it.sssupserver.app.handlers.simplecdnhandler.gson.TopologyWithIdentityGson;
 
 /**
  * Simple class used to track a possible peer and monitor keepalives.

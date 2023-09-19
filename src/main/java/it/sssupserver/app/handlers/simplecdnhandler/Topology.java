@@ -8,6 +8,8 @@ import java.util.concurrent.ConcurrentSkipListMap;
 
 import com.google.gson.GsonBuilder;
 
+import it.sssupserver.app.handlers.simplecdnhandler.gson.DataNodeDescriptorGson;
+
 // this class will hold all the informations about
 // the ring topology
 public class Topology {

@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 

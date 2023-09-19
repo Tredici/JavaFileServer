@@ -28,6 +28,7 @@ import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.gson.*;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ApiManagementHttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ClientHttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.FileManagementHttpHandler;
@@ -1545,7 +1546,7 @@ public class SimpleCDNHandler implements RequestHandler {
             // handle /api calls
             hs.createContext(ApiManagementHttpHandler.PATH, new ApiManagementHttpHandler(this));
             // handle GET, PUT and DELETE for admins only
-            hs.createContext(FileManagementHttpHandler.PATH, new FileManagementHttpHandler());
+            hs.createContext(FileManagementHttpHandler.PATH, new FileManagementHttpHandler(this));
             // set thread pool executor for parallelism
             hs.setExecutor(threadPool);
             managementHttpServers.add(hs);

@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -10,7 +10,7 @@ import com.google.gson.JsonSerializer;
 import it.sssupserver.app.base.FileTree.Node;
 import static it.sssupserver.app.base.HexUtils.*;
 
-class NodeGson implements JsonSerializer<Node> {
+public class NodeGson implements JsonSerializer<Node> {
     @Override
     public JsonElement serialize(Node src, Type typeOfSrc, JsonSerializationContext context) {
         var jObj = new JsonObject();

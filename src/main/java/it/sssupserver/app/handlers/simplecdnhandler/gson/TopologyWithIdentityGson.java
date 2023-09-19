@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -10,6 +10,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
+
+import it.sssupserver.app.handlers.simplecdnhandler.DataNodeDescriptor;
 
 public class TopologyWithIdentityGson
     implements JsonSerializer<TopologyWithIdentityGson>,

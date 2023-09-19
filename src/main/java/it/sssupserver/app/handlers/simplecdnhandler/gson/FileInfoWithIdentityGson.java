@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -8,6 +8,7 @@ import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
 
 import it.sssupserver.app.base.FileTree;
+import it.sssupserver.app.handlers.simplecdnhandler.DataNodeDescriptor;
 
 public class FileInfoWithIdentityGson implements JsonSerializer<FileInfoWithIdentityGson> {
     private DataNodeDescriptor identity;

@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -6,6 +6,9 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
+
+import it.sssupserver.app.handlers.simplecdnhandler.StatsCollector;
+import it.sssupserver.app.handlers.simplecdnhandler.StatsCollector.FileStats;
 
 public class FileStatsGson implements JsonSerializer<StatsCollector.FileStats> {
     @Override

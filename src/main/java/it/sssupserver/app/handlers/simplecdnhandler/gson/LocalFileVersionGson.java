@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -7,6 +7,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSerializationContext;
 import com.google.gson.JsonSerializer;
+
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler.ManagedFileSystemStatus;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler.ManagedFileSystemStatus.LocalFileInfo;
+import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler.ManagedFileSystemStatus.LocalFileInfo.Version;
 
 import static it.sssupserver.app.base.HexUtils.*;
 

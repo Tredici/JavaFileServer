@@ -4,8 +4,9 @@ import java.io.IOException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.DataNodeDescriptor;
-import it.sssupserver.app.handlers.simplecdnhandler.SearchPathWithHashGson;
 import it.sssupserver.app.handlers.simplecdnhandler.SimpleCDNHandler;
+import it.sssupserver.app.handlers.simplecdnhandler.gson.SearchPathWithHashGson;
+
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import static it.sssupserver.app.handlers.httphandler.HttpResponseHelpers.*;

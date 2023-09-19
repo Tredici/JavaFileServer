@@ -1,4 +1,4 @@
-package it.sssupserver.app.handlers.simplecdnhandler;
+package it.sssupserver.app.handlers.simplecdnhandler.gson;
 
 import java.lang.reflect.Type;
 
@@ -7,6 +7,9 @@ import com.google.gson.JsonDeserializationContext;
 import com.google.gson.JsonDeserializer;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParseException;
+
+import it.sssupserver.app.handlers.simplecdnhandler.DataNodeDescriptor;
+import it.sssupserver.app.handlers.simplecdnhandler.RemoteFileInfo;
 
 /**
  * Used to parse response from /api/suppliables
