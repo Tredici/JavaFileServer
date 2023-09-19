@@ -9,7 +9,6 @@ import it.sssupserver.app.commands.utils.FutureMoveCommand;
 import it.sssupserver.app.commands.utils.QueableCommand;
 import it.sssupserver.app.commands.utils.QueableCreateCommand;
 
-import java.net.URISyntaxException;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.net.http.HttpResponse.BodySubscriber;
