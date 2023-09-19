@@ -28,6 +28,8 @@ import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.DefaultPathHasher;
+import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.PathHasher;
 import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
@@ -222,8 +224,9 @@ public class SimpleCDNHandler implements RequestHandler {
     // hold topology seen by this node
     private Topology topology;
 
+    private PathHasher pathHasher = new DefaultPathHasher();
     public long hashFilePath(String path) {
-        return (long)path.hashCode();
+        return pathHasher.hashFilename(path);
     }
 
     /**
