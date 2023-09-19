@@ -7,7 +7,6 @@ import java.net.InetSocketAddress;
 
 import com.google.gson.GsonBuilder;
 import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
 import java.util.List;
@@ -15,7 +14,6 @@ import java.util.Map;
 
 import it.sssupserver.app.base.BufferManager;
 import it.sssupserver.app.base.FileTree;
-import it.sssupserver.app.base.BufferManager.BufferWrapper;
 import it.sssupserver.app.base.FileTree.Node;
 import it.sssupserver.app.commands.utils.FileReducerCommand;
 import it.sssupserver.app.commands.utils.FutureDeleteCommand;
@@ -23,11 +21,10 @@ import it.sssupserver.app.commands.utils.FutureFileSizeCommand;
 import it.sssupserver.app.commands.utils.FutureMkdirCommand;
 import it.sssupserver.app.commands.utils.FutureMoveCommand;
 import it.sssupserver.app.commands.utils.ListTreeCommand;
-import it.sssupserver.app.commands.utils.QueableCommand;
 import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
-import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.httphandler.HttpHelper;
 import it.sssupserver.app.handlers.simplecdnhandler.gson.*;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ApiManagementHttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ClientHttpHandler;
@@ -47,12 +44,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
@@ -218,11 +213,9 @@ public class SimpleCDNHandler implements RequestHandler {
         return thisnode.managementEndpoints;
     }
 
-    private Tika mimeDetector = new Tika();
     // Estimate MIME Type from file name
     public String estimateMimeType(String filename) {
-        String ans = mimeDetector.detect(filename);
-        return ans != null ? ans : "application/octet-stream";
+        return HttpHelper.estimateMimeType(filename);
     }
 
     // hold topology seen by this node
