@@ -8,6 +8,7 @@ import it.sssupserver.app.users.Identity;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -92,7 +93,15 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
     @Override
     public void notFound() throws Exception {
         try {
-            exchange.sendResponseHeaders(404, 0);
+            var res = new StringBuilder()
+                .append("404 NOT FOUND")
+                .append("\n")
+                .toString()
+                .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(404, res.length);
+            exchange.getResponseBody().write(res);
+            exchange.getResponseBody().flush();
+            exchange.close();
         } catch (Exception e) {
             exchange.close();
             throw e;
@@ -134,7 +143,7 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
     private FileManager executor;
 
     public static void handle(FileManager executor, HttpExchange exchange) throws Exception {
-        handle(executor, exchange, null);
+        handle(executor, exchange, (Identity)null);
     }
 
     public static void handle(FileManager executor, HttpExchange exchange, Identity user, Path path, Map<String, String> onSuccessHeaders) throws Exception {
@@ -164,5 +173,9 @@ public class HttpSchedulableReadCommand extends SchedulableReadCommand {
 
     public static void handle(FileManager executor, HttpExchange exchange, Identity user) throws Exception {
         handle(executor, exchange, user, (Map<String, String>)null);
+    }
+
+    public static void handle(FileManager executor, HttpExchange exchange, Map<String, String> onSuccessHeaders) throws Exception {
+        handle(executor, exchange, (Identity)null, onSuccessHeaders);
     }
 }
