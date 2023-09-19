@@ -13,7 +13,7 @@ CMD4="$CMD --Hcdn --Hextra config=SimpleCDN4.json --Xdata server_dir4"
 CMD5="$CMD --Hcdn --Hextra config=SimpleCDN5.json --Xdata server_dir5"
 
 
-tmux new-session -d -y 512 -x 64 "./ds 0" \;\
+tmux new-session -d -y 512 -x 64 "bash" \;\
     set-option remain-on-exit failed \; \
     split-window "$CMD1" \;\
     split-window "$CMD2" \;\
