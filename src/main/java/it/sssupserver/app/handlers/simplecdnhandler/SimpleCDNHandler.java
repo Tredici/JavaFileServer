@@ -28,6 +28,7 @@ import it.sssupserver.app.commands.utils.QueableCreateCommand;
 import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
+import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ApiManagementHttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ClientHttpHandler;
 import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.DefaultPathHasher;
 import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.PathHasher;
@@ -203,7 +204,7 @@ public class SimpleCDNHandler implements RequestHandler {
         return json;
     }
 
-    private String thisnodeAsJson() {
+    public String thisnodeAsJson() {
         return thisnodeAsJson(false);
     }
 
@@ -1334,7 +1335,7 @@ public class SimpleCDNHandler implements RequestHandler {
         }
     }
 
-    private String regularFilesInfoWithMeToJson(boolean prettyPrinting) {
+    public String regularFilesInfoWithMeToJson(boolean prettyPrinting) {
         var obj = new FileInfoWithIdentityGson(thisnode, fsStatus.getAllRegularFileNodes());
         var gBuilder = new GsonBuilder()
             .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
@@ -1348,7 +1349,7 @@ public class SimpleCDNHandler implements RequestHandler {
         return json;
     }
 
-    private String topologyWithMeToJson(boolean prettyPrinting) {
+    public String topologyWithMeToJson(boolean prettyPrinting) {
         var obj = new TopologyWithIdentityGson(thisnode, topology.getSnapshot());
         var gBuilder = new GsonBuilder()
             .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
@@ -1361,7 +1362,7 @@ public class SimpleCDNHandler implements RequestHandler {
         return json;
     }
 
-    private String suppliableFilesWithIdentity(boolean prettyPrinting, boolean detailed) {
+    public String suppliableFilesWithIdentity(boolean prettyPrinting, boolean detailed) {
         var obj = new SuppliableFilesWithIdentityGson(thisnode, fsStatus.getSuppliableFiles());
         var gBuilder = new GsonBuilder()
             .registerTypeAdapter(DataNodeDescriptor.class, new DataNodeDescriptorGson())
@@ -1459,202 +1460,9 @@ public class SimpleCDNHandler implements RequestHandler {
     // Operations associated with client endpoints --------------------
     // ----------------------------------------------------------------
 
-    private static void sendJson(HttpExchange exchange, String json) throws IOException {
-        var bytes = json.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, bytes.length);
-        var os = exchange.getResponseBody();
-        os.write(bytes);
-        exchange.close();
-    }
-
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     // Operations associated with management endpoints ++++++++++++++++
     // ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    // listen for /api calls
-    private class ApiManagementHttpHandler implements HttpHandler {
-        public static final String PATH = "/api";
-
-        private void sendTopology(HttpExchange exchange) throws IOException {
-            var topo = topology.asJsonArray();
-            sendJson(exchange, topo);
-        }
-
-        private void sendTopologyWithIdentity(HttpExchange exchange) throws IOException {
-            var topo = topologyWithMeToJson(false);
-            sendJson(exchange, topo);
-        }
-
-        private void sendIdentity(HttpExchange exchange) throws IOException {
-            var me = thisnodeAsJson();
-            sendJson(exchange, me);
-        }
-
-        private void sendLocalStorageInfo(HttpExchange exchange) throws IOException {
-            var me = fsStatus.regularFilesInfoToJson();
-            sendJson(exchange, me);
-        }
-
-        private void sendLocalStorageInfoWithIdentity(HttpExchange exchange) throws IOException {
-            var info = regularFilesInfoWithMeToJson(false);
-            sendJson(exchange, info);
-        }
-
-        private void sendSuppliableFileInfo(HttpExchange exchange) throws IOException {
-            var info = fsStatus.suppliableFilesAsJson();
-            sendJson(exchange, info);
-        }
-
-        private void sendSuppliableFileInfoWithIdentity(HttpExchange exchange) throws IOException {
-            var info = suppliableFilesWithIdentity(false, false);
-            sendJson(exchange, info);
-        }
-
-        private void sendSuppliableFileInfoDetailed(HttpExchange exchange) throws IOException {
-            var info = fsStatus.suppliableFilesAsJson(true, true);
-            sendJson(exchange, info);
-        }
-
-        private void sendSuppliableFileInfoDetailedWithIdentity(HttpExchange exchange) throws IOException {
-            var info = suppliableFilesWithIdentity(false, true);
-            sendJson(exchange, info);
-        }
-
-        private void sendFileStatistics(HttpExchange exchange) throws IOException {
-            var me = clientStatsCollector.asJson();
-            sendJson(exchange, me);
-        }
-
-        private void sendFileStatisticsWithIdentity(HttpExchange exchange) throws IOException {
-            var stats = statisticsWithIdentity(false);
-            sendJson(exchange, stats);
-        }
-
-        private void sendConfiguration(HttpExchange exchange) throws IOException {
-            var conf = config.toJson();
-            sendJson(exchange, conf);
-        }
-
-        private void sendFileHash(HttpExchange exchange, String searchPath) throws IOException {
-            if (!isValidPathName(searchPath)) {
-                httpBadRequest(exchange, "Invalid path: " + searchPath);
-            } else {
-                var hash = hashFilePath(searchPath);
-                var h = SearchPathWithHashGson.toJson(searchPath, hash);
-                sendJson(exchange, h);
-            }
-        }
-
-        private void handlePOSThello(HttpExchange exchange) throws IOException {
-            try {
-                var is = exchange.getRequestBody();
-                var json = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                var other = DataNodeDescriptor
-                    .fromJson(json);
-                // reply with me
-                sendIdentity(exchange);
-                // new node discovered?
-                watchIfNotWatched(other);
-            } catch (Exception e) {
-                // TODO: handle exception
-                httpBadRequest(exchange);
-            }
-        }
-
-        private void handlePOSTtopology(HttpExchange exchange) throws IOException {
-            try {
-                // parse remote node info
-                // they must be checked
-                var is = exchange.getRequestBody();
-                var json = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                var other = DataNodeDescriptor
-                    .fromJson(json);
-                // reply with seen topology info
-                sendTopologyWithIdentity(exchange);
-                // new node discovered?
-                watchIfNotWatched(other);
-            } catch (Exception e) {
-                // TODO: handle exception
-                httpBadRequest(exchange);
-            }
-        }
-
-        @Override
-        public void handle(HttpExchange exchange) throws IOException {
-            try {
-                var path = new URI(PATH).relativize(exchange.getRequestURI()).getPath();
-                switch (exchange.getRequestMethod()) {
-                    case "GET":
-                        // retrieve node or topology information
-                        {
-                            // TODO - check if it contains path
-                            if (path.equals("topology")) {
-                                // return topology
-                                sendTopologyWithIdentity(exchange);
-                            }
-                            else if (path.equals("identity")) {
-                                // return topology
-                                sendIdentity(exchange);
-                            }
-                            else if (path.equals("storage")) {
-                                // return topology
-                                sendLocalStorageInfoWithIdentity(exchange);
-                            }
-                            else if (path.equals("suppliables")) {
-                                // return topology
-                                sendSuppliableFileInfoWithIdentity(exchange);
-                            }
-                            else if (path.equals("detailedSuppliables")) {
-                                // return topology
-                                sendSuppliableFileInfoDetailedWithIdentity(exchange);
-                            }
-                            else if (path.equals("stats")) {
-                                // return file statistics
-                                sendFileStatisticsWithIdentity(exchange);
-                            }
-                            else if (path.equals("configuration")) {
-                                // return file statistics
-                                sendConfiguration(exchange);
-                            }
-                            else if (path.startsWith("hash/")) {
-                                sendFileHash(exchange, path.substring("hash/".length()));
-                            }
-                            else {
-                                httpNotFound(exchange);
-                            }
-                        }
-                        break;
-                    case "POST":
-                        // for join operations and so...
-                        {
-                            switch (path) {
-                                case "hello":
-                                    {
-                                        // new node found
-                                        handlePOSThello(exchange);
-                                    }
-                                    break;
-                                case "topology":
-                                    {
-                                        handlePOSTtopology(exchange);
-                                    }
-                                    break;
-                                default:
-                                    httpNotFound(exchange);
-                                    break;
-                            }
-                        }
-                        break;
-                    default:
-                        httpMethodNotAllowed(exchange);
-                }
-            } catch (Exception e) {
-                System.err.println(e);
-                e.printStackTrace();
-            }
-        }
-
-    }
 
     public HttpRequest buildApiTopologyPOST(URI uri) {
         var rUri = uri
@@ -1998,7 +1806,7 @@ public class SimpleCDNHandler implements RequestHandler {
         for (var addr : managementAddresses) {
             var hs = HttpServer.create(addr, BACKLOG);
             // handle /api calls
-            hs.createContext(ApiManagementHttpHandler.PATH, new ApiManagementHttpHandler());
+            hs.createContext(ApiManagementHttpHandler.PATH, new ApiManagementHttpHandler(this));
             // handle GET, PUT and DELETE for admins only
             hs.createContext(FileManagementHttpHandler.PATH, new FileManagementHttpHandler());
             // set thread pool executor for parallelism
@@ -2051,7 +1859,7 @@ public class SimpleCDNHandler implements RequestHandler {
      */
     private ConcurrentSkipListMap<Long, PeerWatcher> candidatesById;
 
-    private void watchIfNotWatched(DataNodeDescriptor remoteNode) throws URISyntaxException {
+    public void watchIfNotWatched(DataNodeDescriptor remoteNode) throws URISyntaxException {
         var rn = topology.findDataNodeDescriptorById(remoteNode.getId());
         if (rn == null && isDataNodeCompatible(remoteNode)) {
             for (var me : remoteNode.getManagementEndpoints()) {

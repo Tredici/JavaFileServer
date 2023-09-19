@@ -1,10 +1,20 @@
 package it.sssupserver.app.handlers.httphandler;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import com.sun.net.httpserver.HttpExchange;
 
 public class HttpResponseHelpers {
+
+    public static void sendJson(HttpExchange exchange, String json) throws IOException {
+        var bytes = json.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, bytes.length);
+        var os = exchange.getResponseBody();
+        os.write(bytes);
+        exchange.close();
+    }
 
     public static void httpOk(HttpExchange exchange, String error) {
         try {
