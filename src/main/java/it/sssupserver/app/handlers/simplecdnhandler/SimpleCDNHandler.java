@@ -29,6 +29,8 @@ import it.sssupserver.app.filemanagers.FileManager;
 import it.sssupserver.app.handlers.RequestHandler;
 import it.sssupserver.app.handlers.httphandler.HttpSchedulableReadCommand;
 import it.sssupserver.app.handlers.simplecdnhandler.httphandlers.ClientHttpHandler;
+import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.DefaultPathHasher;
+import it.sssupserver.app.handlers.simplecdnhandler.pathhashers.PathHasher;
 import it.sssupserver.app.users.Identity;
 
 import java.net.URI;
@@ -222,8 +224,10 @@ public class SimpleCDNHandler implements RequestHandler {
 
     // hold topology seen by this node
     private Topology topology;
-    public Topology getTopology() {
-        return topology;
+
+    private PathHasher pathHasher = new DefaultPathHasher();
+    public long hashFilePath(String path) {
+        return pathHasher.hashFilename(path);
     }
 
     /**
@@ -256,10 +260,11 @@ public class SimpleCDNHandler implements RequestHandler {
     // NOTE: test OWNERSHIP, not ability to supply it!
     // should not consider initial "/"
     public boolean testOwnershipOrRedirect(String path, HttpExchange exchange) {
-        if (topology.isFileOwned(path)) {
+        var hash = hashFilePath(path);
+        if (topology.isFileOwned(hash)) {
             return true;
         } else {
-            var owner = topology.getFileOwner(path);
+            var owner = topology.getFileOwner(hash);
             var index = (int)(owner.dataEndpoints.length * Math.random());
             var redirect = owner.dataEndpoints[index];
             try {
@@ -283,10 +288,11 @@ public class SimpleCDNHandler implements RequestHandler {
     // test if this node is allowed to return specified file
     // should not consider initial "/"
     public boolean testSupplyabilityOrRedirect(String path, HttpExchange exchange) {
-        if (topology.isFileSupplier(path)) {
+        var hash = hashFilePath(path);
+        if (topology.isFileSupplier(hash)) {
             return true;
         } else {
-            var owner = topology.peekRandomSupplier(path);
+            var owner = topology.peekRandomSupplier(hash);
             var redirect = owner.getRandomDataEndpointURL();
             try {
                 // 308 Permanent Redirect
@@ -306,10 +312,11 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     public boolean testOwnershipOrRedirectToManagement(String path, HttpExchange exchange) {
-        if (topology.isFileOwned(path)) {
+        var hash = hashFilePath(path);
+        if (topology.isFileOwned(hash)) {
             return true;
         } else {
-            var owner = topology.getFileOwner(path);
+            var owner = topology.getFileOwner(hash);
             var redirect = owner.getRandomManagementEndpointURL();
             try {
                 // Set Location header
@@ -336,13 +343,14 @@ public class SimpleCDNHandler implements RequestHandler {
     }
 
     public boolean testSupplyabilityOrRedirectToManagement(String path, HttpExchange exchange) {
-        if (topology.isFileSupplier(path)) {
+        var hash = hashFilePath(path);
+        if (topology.isFileSupplier(hash)) {
             return true;
         } else if (path.contains("@")) {
             // if path contains metadata disable redirection
             return true;
         } else {
-            var owner = topology.peekRandomSupplier(path);
+            var owner = topology.peekRandomSupplier(hash);
             var redirect = owner.getRandomManagementEndpointURL();
             try {
                 exchange.getResponseHeaders()
@@ -1092,10 +1100,11 @@ public class SimpleCDNHandler implements RequestHandler {
                     var file = downloadRequests.remove(searchPath);
                     // schedule download
                     try {
+                        var hash = hashFilePath(searchPath);
                         // check if already downloaded in the meantime
                         if (handler.getFsStatus().isRemoteVersionDownloadable(file)
                             // or if topology has changed
-                            && topology.isFileSupplier(searchPath)
+                            && topology.isFileSupplier(hash)
                         ) {
                             startDownloadOrDeletion(searchPath, file);
                         } else {
@@ -1133,7 +1142,8 @@ public class SimpleCDNHandler implements RequestHandler {
         for (var file : files) {
             // should this node supply this file?
             var searchPath = file.getSearchPath().toString();
-            if (topology.isFileSupplier(searchPath)) {
+            var hash = hashFilePath(searchPath);
+            if (topology.isFileSupplier(hash)) {
                 // is file locally available?
                 if (fsStatus.isRemoteVersionDownloadable(file)) {
                     // associate file to peer
@@ -1529,7 +1539,8 @@ public class SimpleCDNHandler implements RequestHandler {
             if (!isValidPathName(searchPath)) {
                 httpBadRequest(exchange, "Invalid path: " + searchPath);
             } else {
-                var h = SearchPathWithHashGson.toJson(searchPath, topology.getFileHash(searchPath));
+                var hash = hashFilePath(searchPath);
+                var h = SearchPathWithHashGson.toJson(searchPath, hash);
                 sendJson(exchange, h);
             }
         }

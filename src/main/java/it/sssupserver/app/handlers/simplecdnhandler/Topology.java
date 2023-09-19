@@ -70,15 +70,9 @@ public class Topology {
         // return other or me
         return succE.getValue() == node ? null : succE.getValue();
     }
-
-    // get hash from file name
-    public long getFileHash(String path) {
-        return (long)path.hashCode();
-    }
-
-    public DataNodeDescriptor getFileOwner(String path) {
-        // get file hash
-        var hash = getFileHash(path);
+    
+    public DataNodeDescriptor getFileOwner(long hash)
+    {
         var ownerE = datanodes.floorEntry(hash);
         if (ownerE == null) {
             ownerE = datanodes.lastEntry();
@@ -100,11 +94,11 @@ public class Topology {
         return candidateOwner;
     }
 
-    public List<DataNodeDescriptor> getFileSuppliers(String path) {
+    public List<DataNodeDescriptor> getFileSuppliers(long hash) {
         // expected number o
         var R = thisnode.replicationFactor;
         List<DataNodeDescriptor> ans = new ArrayList<>(R);
-        final var owner = getFileOwner(path);
+        final var owner = getFileOwner(hash);
         ans.add(owner);
         var supplier = owner;
         Set<DataNodeDescriptor> loopPrevention = new HashSet<>(R);
@@ -125,15 +119,15 @@ public class Topology {
     }
 
     // obtain random supplier to perform redirect
-    public DataNodeDescriptor peekRandomSupplier(String path) {
-        var candidates = getFileSuppliers(path);
+    public DataNodeDescriptor peekRandomSupplier(long hash) {
+        var candidates = getFileSuppliers(hash);
         var node = candidates.get((int)(candidates.size() * Math.random()));
         return node;
     }
 
     // is given node supplier of file?
-    public boolean isFileSupplier(DataNodeDescriptor node, String path) {
-        return getFileSuppliers(path).contains(node);
+    public boolean isFileSupplier(DataNodeDescriptor node, long hash) {
+        return getFileSuppliers(hash).contains(node);
     }
 
     public DataNodeDescriptor searchDataNodeDescriptorById(long id) {
@@ -141,18 +135,18 @@ public class Topology {
     }
 
     // is current node supplier of file?
-    public boolean isFileSupplier(String path) {
-        return isFileSupplier(thisnode, path);
+    public boolean isFileSupplier(long hash) {
+        return isFileSupplier(thisnode, hash);
     }
 
     // Does given datanode own specified file?
-    public boolean isFileOwner(DataNodeDescriptor datanode, String path) {
-        return datanode == getFileOwner(path);
+    public boolean isFileOwner(DataNodeDescriptor datanode, long hash) {
+        return datanode == getFileOwner(hash);
     }
 
     // is the file owned by the current node?
-    public boolean isFileOwned(String path) {
-        return thisnode == getFileOwner(path);
+    public boolean isFileOwned(long hash) {
+        return thisnode == getFileOwner(hash);
     }
 
     public DataNodeDescriptor[] getSnapshot() {
